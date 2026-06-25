@@ -1,0 +1,1813 @@
+﻿diff --git a/include/rex/graphics/d3d12/render_target_cache.h b/include/rex/graphics/d3d12/render_target_cache.h
+index b9d2688..c6a43ee 100644
+--- a/include/rex/graphics/d3d12/render_target_cache.h
++++ b/include/rex/graphics/d3d12/render_target_cache.h
+@@ -666,7 +666,7 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
+   // Writes contents of host render targets within rectangles from
+   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
+   bool DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+-                         uint32_t dump_pitch);
++                         uint32_t dump_pitch, RenderTarget* forced_source = nullptr);
+ 
+   bool use_stencil_reference_output_ = false;
+ 
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index e0679b8..3ba11d8 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -47,6 +47,7 @@ REXCVAR_DECLARE(bool, native_2x_msaa);
+ REXCVAR_DECLARE(bool, snorm16_render_target_full_range);
+ REXCVAR_DECLARE(bool, mrt_edram_used_range_clamp_to_min);
+ REXCVAR_DECLARE(bool, direct_host_resolve);
++REXCVAR_DECLARE(int32_t, rtv_color_depth_ownership_mode);
+ 
+ // GPU Textures
+ REXCVAR_DECLARE(bool, gpu_allow_invalid_fetch_constants);
+diff --git a/include/rex/graphics/pipeline/render_target/cache.h b/include/rex/graphics/pipeline/render_target/cache.h
+index 18e6b14..d7a8c87 100644
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -1,4 +1,4 @@
+-#pragma once
++﻿#pragma once
+ /**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+@@ -520,14 +520,30 @@ class RenderTargetCache {
+   // render target texture rectangle - textures may have any pitch they need)
+   // from ResolveInfo::GetCopyEdramTileSpan and render targets owning them to
+   // rectangles_out.
++  // When forced_source is non-null, the whole resolved tile span is
++  // dumped from that one render target instead of consulting the EDRAM ownership
++  // map. Used by the host-RT color resolve to read the scene-color render target
++  // directly (it was drawn full-screen) and avoid the color/depth ownership
++  // interleaving that otherwise produces black bands (Diablo III base 0x040C).
+   void GetResolveCopyRectanglesToDump(uint32_t base, uint32_t row_length, uint32_t rows,
+                                       uint32_t pitch,
+-                                      std::vector<ResolveCopyDumpRectangle>& rectangles_out) const;
++                                      std::vector<ResolveCopyDumpRectangle>& rectangles_out,
++                                      RenderTarget* forced_source = nullptr) const;
+   void GetResolveCopyDispatchesToDump(uint32_t base, uint32_t row_length, uint32_t rows,
+                                       uint32_t pitch,
+                                       std::vector<ResolveCopyDumpRectangle>& rectangles_out,
+                                       std::vector<ResolveCopyDispatch>& dispatches_out) const;
+ 
++  // Returns the already-existing color render target that a color
++  // resolve drew into (reconstructed from resolve_info; never creates one), or
++  // nullptr. Used by mode 4 to resolve the scene color directly from that render
++  // target, bypassing the EDRAM color/depth ownership interleaving.
++  RenderTarget* GetExistingColorResolveSource(const draw_util::ResolveInfo& resolve_info) const;
++
++  // Set by the backend's Resolve() so GetResolveCopyRectanglesToDump
++  // can choose the color or depth ownership map in mode 5.
++  void SetCurrentResolveIsDepth(bool is_depth) { current_resolve_is_depth_ = is_depth; }
++
+   // Sets up the needed render targets and transfers to perform a clear in a
+   // resolve operation via a host render target clear. resolve_info is expected
+   // to be obtained via draw_util::GetResolveInfo. Returns whether any clears
+@@ -672,6 +688,17 @@ class RenderTargetCache {
+   // changes to this throughout a frame are pretty rare.
+   std::map<uint32_t, OwnershipRange> ownership_ranges_;
+ 
++  // Mode 5: a SECOND ownership map used only for depth render
++  // targets on the host-render-target path, so depth never steals EDRAM
++  // ownership from color (and vice versa). A color resolve reads ownership_ranges_
++  // (color only) and assembles the full scene, a depth resolve reads this one -
++  // the clean fix for guests that reuse an EDRAM base as both color and depth
++  // (Diablo III base 0x040C). Empty/unused in modes 0-4.
++  std::map<uint32_t, OwnershipRange> ownership_ranges_depth_;
++  // Set by Resolve() before dumping so GetResolveCopyRectanglesToDump can pick
++  // the matching ownership map in mode 5.
++  bool current_resolve_is_depth_ = false;
++
+   // Render targets actually used by the draw call with the last successful
+   // update. 0 is depth, color starting from 1, nullptr if not bound.
+   // Only valid for non-pixel-shader-interlock paths.
+diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
+index 2483b99..7cb861b 100644
+--- a/include/rex/input/mnk/mnk_input_driver.h
++++ b/include/rex/input/mnk/mnk_input_driver.h
+@@ -69,6 +69,7 @@ class MnkInputDriver final : public InputDriver,
+   int32_t prev_mouse_x_ = 0;
+   int32_t prev_mouse_y_ = 0;
+   bool mouse_captured_ = false;
++  bool cursor_hidden_ = false;
+   bool has_focus_ = true;
+ 
+   // Keystroke queue
+diff --git a/include/rex/system/xobject.h b/include/rex/system/xobject.h
+index 0a43f07..76af589 100644
+--- a/include/rex/system/xobject.h
++++ b/include/rex/system/xobject.h
+@@ -220,6 +220,17 @@ class XObject {
+     return reinterpret_cast<T*>(CreateNative(sizeof(T)));
+   }
+ 
++  // Frees the guest native object (and its object-type block) that CreateNative
++  // allocated from the system heap. This is normally only done in ~XObject, but
++  // for objects whose C++ instance can outlive their execution indefinitely
++  // (e.g. fire-and-forget XamTaskSchedule threads, whose handle is never closed
++  // so the destructor never runs) the guest allocations would leak and exhaust
++  // the guest system heap. Callers must guarantee nothing can still reference
++  // the guest struct (e.g. no open handle that could query a thread's
++  // exit_status). Idempotent: clears allocated_guest_object_ so ~XObject does
++  // not double-free.
++  void FreeNativeObject();
++
+   // Stash native pointer into X_DISPATCH_HEADER
+   static void StashHandle(X_DISPATCH_HEADER* header, uint32_t handle) {
+     header->wait_list_flink = kXObjSignature;
+diff --git a/include/rex/system/xthread.h b/include/rex/system/xthread.h
+index c5f3de7..379d3de 100644
+--- a/include/rex/system/xthread.h
++++ b/include/rex/system/xthread.h
+@@ -339,6 +339,12 @@ class XThread : public XObject {
+   X_STATUS Exit(int exit_code);
+   X_STATUS Terminate(int exit_code);
+ 
++  // When set, Exit() frees this thread's guest native object (X_KTHREAD block)
++  // instead of leaking it. Only valid for fire-and-forget threads whose handle
++  // is never handed to / closed by the guest and whose exit_status is never
++  // queried (e.g. XamTaskSchedule tasks). See FreeNativeObject().
++  void set_free_native_on_exit(bool value) { free_native_on_exit_ = value; }
++
+   virtual void Execute();
+ 
+   rex::thread::Fiber* main_fiber() const { return main_fiber_; }
+@@ -416,6 +422,9 @@ class XThread : public XObject {
+   uint32_t stack_limit_ = 0;       // Low address
+   bool guest_thread_ = false;
+   bool main_thread_ = false;  // Entry-point thread
++  // Set for fire-and-forget threads (XamTaskSchedule): Exit() frees the guest
++  // native object so it is not leaked when the destructor never runs.
++  bool free_native_on_exit_ = false;
+   // Atomic: written by the thread itself in Exit/Terminate, read cross-thread by
+   // KernelState::TerminateTitle's cooperative drain.
+   std::atomic<bool> running_{false};
+diff --git a/include/rex/ui/imgui_drawer.h b/include/rex/ui/imgui_drawer.h
+index c72b628..93562b4 100644
+--- a/include/rex/ui/imgui_drawer.h
++++ b/include/rex/ui/imgui_drawer.h
+@@ -47,6 +47,12 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
+   void AddDialog(ImGuiDialog* dialog);
+   void RemoveDialog(ImGuiDialog* dialog);
+ 
++  // True while at least one dialog is attached. ImGui only updates its io (and
++  // the WantCapture* flags) while drawing dialogs; once the last one is removed
++  // the drawer detaches and those flags freeze at their last value, so callers
++  // must gate any use of them on this being true.
++  bool has_dialogs() const { return !dialogs_.empty(); }
++
+   // SetPresenter may be called from the destructor.
+   void SetPresenter(Presenter* new_presenter);
+   void SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer);
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 75764de..61d4ac5 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -81,6 +81,12 @@ if(UNIX)
+     target_link_libraries(rexcore PRIVATE pthread rt dl)
+ endif()
+ 
++if(WIN32)
++    # winmm: timeBeginPeriod (raise the system timer resolution so sleeps used for
++    # frame pacing are accurate -- see threading_win.cpp).
++    target_link_libraries(rexcore PRIVATE winmm)
++endif()
++
+ target_link_libraries(rexcore
+     PUBLIC
+         fmt::fmt
+diff --git a/src/core/threading_win.cpp b/src/core/threading_win.cpp
+index 896dfec..13fa6a6 100644
+--- a/src/core/threading_win.cpp
++++ b/src/core/threading_win.cpp
+@@ -13,6 +13,8 @@ static_assert(REX_PLATFORM_WIN32, "This file is Windows-only");
+ 
+ #include "platform_win.h"
+ 
++#include <timeapi.h>
++
+ #include <spdlog/spdlog.h>
+ 
+ #include <rex/assert.h>
+@@ -25,6 +27,18 @@ typedef HANDLE (*SetThreadDescriptionFn)(HANDLE hThread, PCWSTR lpThreadDescript
+ 
+ namespace rex::thread {
+ 
++// Raise the Windows multimedia-timer resolution to 1 ms for the lifetime of the
++// process. Without this the default resolution is ~15.6 ms and short sleeps used
++// for frame pacing (e.g. the GPU frame limiter / vblank thread) are imprecise.
++// (Previously this only worked by accident because spdlog raised the resolution
++// while logging.) timeEndPeriod is paired on teardown.
++namespace {
++struct TimerResolutionGuard {
++  TimerResolutionGuard() { timeBeginPeriod(1); }
++  ~TimerResolutionGuard() { timeEndPeriod(1); }
++} g_timer_resolution_guard;
++}  // namespace
++
+ void EnableAffinityConfiguration() {
+   HANDLE process_handle = GetCurrentProcess();
+   DWORD_PTR process_affinity_mask;
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 8e898b6..8ee4742 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -86,6 +86,7 @@ if(REXGLUE_USE_D3D12)
+         d3d12/texture_cache.cpp
+         d3d12/deferred_command_list.cpp
+         d3d12/pipeline_cache.cpp
++        d3d12/d3d_screenshot.cpp
+     )
+ endif()
+ 
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index 60efcd3..f83be2c 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -1,4 +1,4 @@
+-/**
++﻿/**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+  ******************************************************************************
+@@ -10,10 +10,13 @@
+  */
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
++#include <mutex>
+ #include <string_view>
++#include <thread>
+ 
+ #include <fmt/format.h>
+ 
+@@ -34,9 +37,18 @@
+ #include <rex/stream.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/user_module.h>
++#include <rex/thread.h>
+ 
+ REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
+ 
++// Guest frame-rate limiter. Diablo III renders uncapped (~100 guest
++// swaps/s) but the host only presents ~44/s; the GPU burns ~100% rendering ROV
++// frames that are dropped before display, which also makes frame pacing (and
++// thus audio) jittery. Pacing the guest swap to a sustainable rate stops the
++// wasted work and smooths delivery. 0 = unlimited (original behaviour).
++REXCVAR_DEFINE_INT32(d3_frame_limit, 0, "GPU",
++                     "Limit guest swap/frame rate to N fps (0 = unlimited)");
++
+ REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
+                     "Refresh page-valid state from GPU-written memory at frame end. "
+                     "Disable for minor CPU overhead reduction, but may break memory coherency.")
+@@ -1098,6 +1110,105 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+ 
+   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+ 
++  // [D3DIAG] Swap probe: distinguish "stuck title" (a) vs "advanced but not
++  // rendered" (b). Logs frontbuffer ptr/size every ~60 swaps, and immediately
++  // whenever the frontbuffer pointer changes (= the guest swapped to a
++  // different framebuffer, i.e. a new screen).
++  {
++    static uint32_t d3_last_fb = 0xFFFFFFFF;
++    if (frontbuffer_ptr != d3_last_fb) {
++      REXGPU_INFO("[D3DIAG] SWAP fb CHANGED {:08X} -> {:08X} ({}x{}) frame#{}",
++                  d3_last_fb, frontbuffer_ptr, frontbuffer_width,
++                  frontbuffer_height, counter_);
++      d3_last_fb = frontbuffer_ptr;
++    } else if ((counter_ % 600) == 0) {
++      REXGPU_INFO("[D3DIAG] SWAP alive fb={:08X} ({}x{}) frame#{}",
++                  frontbuffer_ptr, frontbuffer_width, frontbuffer_height,
++                  counter_);
++    }
++  }
++
++  // Frame limiter + frame-time telemetry.
++  //
++  // Limiter: pace the guest swap to d3_frame_limit fps. Sleeping here (on the
++  // command-processor thread -- confirmed single-threaded for swaps; backpressures the guest render loop via the ring buffer, so the GPU only
++  // renders frames that will be shown. A stable cadence that divides the monitor
++  // refresh (e.g. 30 into 60Hz) also removes present judder: each guest frame
++  // maps to a fixed number of vblanks instead of the presenter dropping vblanks
++  // irregularly under an unstable 90-104fps guest rate. Diablo III on the 360 ran
++  // at 30fps, so 30 is the faithful target. Uses Xenia-canary's proven hybrid
++  // wait: coarse sleep for the bulk of the interval, then a busy-spin tail for
++  // accuracy (immune to OS sleep granularity).
++  //
++  // Telemetry: logs a frame-time histogram (avg/min/max + count of >50ms stutter
++  // spikes) every ~5s. telemetry logs variance and
++  // spikes matter for "smoothness", not just average fps. It also runs every
++  // frame so it is always present in the log regardless of d3_frame_limit.
++  {
++    using namespace std::chrono;
++    auto now_ns = []() {
++      return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
++    };
++    int32_t limit = REXCVAR_GET(d3_frame_limit);
++    static int64_t s_next_ns = 0;
++    int64_t t = now_ns();
++    if (limit > 0) {
++      const int64_t interval_ns = int64_t(1000000000LL) / limit;
++      const int64_t spin_margin_ns = 1500000LL;  // busy-spin the last ~1.5ms
++      if (s_next_ns == 0 || t > s_next_ns + interval_ns) {
++        // First swap, or we fell far behind (heavy scene/load) -> resync.
++        s_next_ns = t + interval_ns;
++      } else {
++        const int64_t target = s_next_ns;
++        for (;;) {
++          int64_t remaining = target - now_ns();
++          if (remaining <= 0) break;
++          if (remaining > spin_margin_ns) {
++            std::this_thread::sleep_for(nanoseconds(remaining - spin_margin_ns));
++          }
++          // else: busy-spin (loop re-reads steady_clock) until the target.
++        }
++        s_next_ns += interval_ns;
++      }
++      t = now_ns();  // post-pace timestamp drives the telemetry below
++    } else {
++      s_next_ns = 0;  // reset so a later re-enable resyncs cleanly
++    }
++
++    // Frame-time histogram over a ~5s window.
++    static int64_t s_prev_ns = 0, s_win_ns = 0, s_sum_us = 0, s_min_us = 0, s_max_us = 0;
++    static uint32_t s_frames = 0, s_spikes = 0;
++    static bool s_first = true;
++    if (s_first) {
++      s_first = false;
++      REXGPU_INFO("[D3 pace] frame limiter active, d3_frame_limit={}", limit);
++    }
++    if (s_prev_ns != 0) {
++      int64_t dt_us = (t - s_prev_ns) / 1000;
++      s_sum_us += dt_us;
++      ++s_frames;
++      if (s_min_us == 0 || dt_us < s_min_us) s_min_us = dt_us;
++      if (dt_us > s_max_us) s_max_us = dt_us;
++      if (dt_us > 50000) ++s_spikes;  // >50ms inter-frame = visible stutter
++    }
++    s_prev_ns = t;
++    if (s_win_ns == 0) s_win_ns = t;
++    if (t - s_win_ns >= 5000000000LL && s_frames > 0) {
++      REXGPU_INFO(
++          "[D3 pace] limit={} fps={:.1f} avg={:.2f}ms min={:.2f}ms "
++          "max={:.2f}ms spikes>50ms={}",
++          limit, double(s_frames) * 1e9 / double(t - s_win_ns),
++          double(s_sum_us) / s_frames / 1000.0, s_min_us / 1000.0, s_max_us / 1000.0, s_spikes);
++      s_win_ns = t;
++      s_sum_us = 0;
++      s_frames = 0;
++      s_min_us = 0;
++      s_max_us = 0;
++      s_spikes = 0;
++    }
++  }
++
+   ++counter_;
+   return true;
+ }
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index efed1b7..a56a779 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <cstdarg>
++#include <cstdio>
+ #include <cstring>
+ #include <sstream>
+ #include <utility>
+@@ -49,6 +50,18 @@ REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
+ 
+ namespace rex::graphics::d3d12 {
+ 
++// Dependency-free PNG writer (d3d_screenshot.cpp) for headless render debugging.
++bool WriteRawImageToPng(const std::string& path, uint32_t width, uint32_t height,
++                        const uint8_t* rgbx, size_t stride);
++
++// [D3DIAG] On-demand per-frame RT/resolve/draw logging (d3d_screenshot.cpp).
++void RtLogArm(int frames);
++bool RtLogActive();
++void RtLogCountDraw();
++uint64_t RtLogGetDraws();
++uint64_t RtLogGetResolves();
++void RtLogEndFrameReset();
++
+ // Generated with `xb buildshaders`.
+ namespace shaders {
+ #include "../shaders/bytecode/d3d12_5_1/apply_gamma_pwl_cs.h"
+@@ -2278,6 +2291,62 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   // End the frame even if did not present for any reason (the image refresher
+   // was not called), to prevent leaking per-frame resources.
+   EndSubmission(true);
++
++  // [D3DIAG] File-triggered guest-output screenshot for headless render
++  // debugging. When "shot.req" exists, capture the just-presented frame (the
++  // final composited guest output) to a PNG so it can be inspected without a
++  // physical display. The req file's contents (if any) are the output path;
++  // otherwise a default sibling path is used. One-shot: the req is removed.
++  {
++    static uint64_t s_shot_poll = 0;
++    if ((s_shot_poll++ % 15) == 0) {
++      const char* kReqPath = "D:\\Diablo3_ReXGlue\\port\\shot.req";
++      if (FILE* rf = fopen(kReqPath, "rb")) {
++        char buf[512] = {0};
++        size_t n = fread(buf, 1, sizeof(buf) - 1, rf);
++        fclose(rf);
++        while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' ||
++                         buf[n - 1] == ' ' || buf[n - 1] == '\t')) {
++          buf[--n] = 0;
++        }
++        std::string png =
++            n > 0 ? std::string(buf) : std::string("D:\\Diablo3_ReXGlue\\port\\shot.png");
++        remove(kReqPath);
++        ui::Presenter* shot_presenter =
++            graphics_system_ ? graphics_system_->presenter() : nullptr;
++        ui::RawImage shot_image;
++        if (shot_presenter && shot_presenter->CaptureGuestOutput(shot_image)) {
++          if (WriteRawImageToPng(png, shot_image.width, shot_image.height,
++                                 shot_image.data.data(), shot_image.stride)) {
++            REXGPU_INFO("[D3DIAG] screenshot written: {} ({}x{})", png, shot_image.width,
++                        shot_image.height);
++          } else {
++            REXGPU_ERROR("[D3DIAG] screenshot: PNG write failed: {}", png);
++          }
++        } else {
++          REXGPU_ERROR("[D3DIAG] screenshot: CaptureGuestOutput failed");
++        }
++      }
++    }
++
++    // [D3DIAG] Arm per-frame RT/resolve/draw logging when "rtdump.req" exists.
++    if ((s_shot_poll % 15) == 1) {
++      const char* kRtReqPath = "D:\\Diablo3_ReXGlue\\port\\rtdump.req";
++      if (FILE* rrf = fopen(kRtReqPath, "rb")) {
++        fclose(rrf);
++        remove(kRtReqPath);
++        RtLogArm(3);  // characterize the next 3 frames
++        REXGPU_INFO("[D3DIAG] RTLOG armed for 3 frames");
++      }
++    }
++  }
++
++  // [D3DIAG] At frame boundary, emit the structural summary while armed.
++  if (RtLogActive()) {
++    REXGPU_INFO("[D3DIAG] RTLOG frame: draws={} resolves={} swap_fb={:08X}", RtLogGetDraws(),
++                RtLogGetResolves(), frontbuffer_ptr);
++    RtLogEndFrameReset();
++  }
+ }
+ 
+ void D3D12CommandProcessor::OnPrimaryBufferEnd() {
+@@ -2308,6 +2377,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     return IssueCopy();
+   }
+ 
++  RtLogCountDraw();  // [D3DIAG] frame structure characterization
++
+   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
+ 
+   // Vertex shader analysis.
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index 8e269c4..f6d85a6 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -1,4 +1,4 @@
+-/**
++﻿/**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+  ******************************************************************************
+@@ -48,8 +48,20 @@ REXCVAR_DEFINE_STRING(render_target_path_d3d12, "", "GPU/D3D12",
+ 
+ REXCVAR_DEFINE_BOOL(native_stencil_value_output, true, "GPU", "Enable native stencil value output");
+ 
++// ROV forces float24 depth conversion in the pixel shader for
++// correctness, but that conversion has a severe per-pixel performance cost (per
++// the Xenia "Leaving No Pixel Behind" writeup). This lets it be disabled on the
++// ROV path to measure/recover performance when a game doesn't visibly need it.
++// Default true = stock ROV behavior.
++REXCVAR_DEFINE_BOOL(rov_float24_depth_conversion, true, "GPU/D3D12",
++                    "Force float24 depth conversion in the pixel shader on the ROV path");
++
+ namespace rex::graphics::d3d12 {
+ 
++// [D3DIAG] On-demand per-frame RT/resolve logging (d3d_screenshot.cpp).
++bool RtLogActive();
++void RtLogCountResolve();
++
+ // Generated with `xb buildshaders`.
+ namespace shaders {
+ #include "../shaders/bytecode/d3d12_5_1/clear_uint2_ps.h"
+@@ -871,9 +883,13 @@ bool D3D12RenderTargetCache::Initialize() {
+     // Blending is done in linear space directly in shaders.
+     gamma_render_target_as_unorm16_ = false;
+ 
+-    // Always true float24 depth rounded to the nearest even.
+-    depth_float24_round_ = true;
+-    depth_float24_convert_in_pixel_shader_ = true;
++    // Always true float24 depth rounded to the nearest even (for correctness).
++    // Optional escape hatch to skip the costly float24 depth
++    // conversion on the ROV path (keeps whatever the generic cvars selected).
++    if (REXCVAR_GET(rov_float24_depth_conversion)) {
++      depth_float24_round_ = true;
++      depth_float24_convert_in_pixel_shader_ = true;
++    }
+ 
+     // Only ForcedSampleCount, which doesn't support 2x.
+     msaa_2x_supported_ = false;
+@@ -1187,6 +1203,23 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+     return true;
+   }
+ 
++  // Tell GetResolveCopyRectanglesToDump which ownership map to read
++  // in mode 5 (separate color/depth maps).
++  SetCurrentResolveIsDepth(resolve_info.IsCopyingDepth());
++
++  // [D3DIAG] Characterize where the scene resolves to (armed per-frame).
++  RtLogCountResolve();
++  if (RtLogActive()) {
++    REXGPU_INFO(
++        "[D3DIAG] RTLOG resolve: color_base={:08X} depth_base={:08X} -> dest={:08X} len={:08X} "
++        "{}x{} fmt={} copy_depth={} clear_color={:08X}",
++        resolve_info.color_original_base, resolve_info.depth_original_base,
++        resolve_info.copy_dest_base, resolve_info.copy_dest_extent_length,
++        resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8,
++        uint32_t(resolve_info.copy_dest_info.copy_dest_format),
++        uint32_t(resolve_info.IsCopyingDepth()), resolve_info.rb_color_clear);
++  }
++
+   DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
+ 
+   // Copying.
+@@ -1203,7 +1236,18 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+           draw_util::resolve_copy_shader_info[size_t(copy_shader)];
+       bool direct_resolved = false;
+       if (GetPath() == Path::kHostRenderTargets) {
+-        if (REXCVAR_GET(direct_host_resolve)) {
++        // Mode 4: read the scene-color render target directly. The
++        // guest reuses EDRAM base 0x040C as both the lit-scene color composite
++        // and a depth buffer in the same frame; with separate host textures the
++        // composite's color survives in its own render target, but the EDRAM
++        // ownership map interleaves color/depth owners (1-tile-row offset) and a
++        // normal resolve reads the wrong owner in bands. Dump the color render
++        // target that was drawn directly for the whole span instead.
++        RenderTarget* forced_color_source = nullptr;
++        if (REXCVAR_GET(rtv_color_depth_ownership_mode) == 4) {
++          forced_color_source = GetExistingColorResolveSource(resolve_info);
++        }
++        if (!forced_color_source && REXCVAR_GET(direct_host_resolve)) {
+           direct_resolved =
+               TryResolveCopyDirectly(resolve_info, copy_shader, draw_resolution_scaled);
+           if (direct_resolved) {
+@@ -1214,13 +1258,14 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+         }
+         if (!direct_resolved) {
+           // Dump the current contents of the render targets owning the affected
+-          // range to edram_buffer_.
++          // range to edram_buffer_ (or the forced color source for mode 4).
+           uint32_t dump_base;
+           uint32_t dump_row_length_used;
+           uint32_t dump_rows;
+           uint32_t dump_pitch;
+           resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+-          if (!DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch)) {
++          if (!DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch,
++                                 forced_color_source)) {
+             REXGPU_ERROR("D3D12RenderTargetCache: Failed to dump host render targets for resolve");
+             return false;
+           }
+@@ -5739,11 +5784,12 @@ bool D3D12RenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo
+ }
+ 
+ bool D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
+-                                               uint32_t dump_rows, uint32_t dump_pitch) {
++                                               uint32_t dump_rows, uint32_t dump_pitch,
++                                               RenderTarget* forced_source) {
+   assert_true(GetPath() == Path::kHostRenderTargets);
+ 
+   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows, dump_pitch,
+-                                 dump_rectangles_);
++                                 dump_rectangles_, forced_source);
+   if (dump_rectangles_.empty()) {
+     return true;
+   }
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 382b0b2..933d7ac 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -1,4 +1,4 @@
+-/**
++﻿/**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+  ******************************************************************************
+@@ -11,8 +11,10 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <cstdio>
+ #include <cstring>
+ #include <iterator>
++#include <string>
+ #include <tuple>
+ #include <unordered_set>
+ #include <utility>
+@@ -41,6 +43,37 @@ REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
+                     "Resolve from host render targets directly to shared memory when possible")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++// In the host-render-target path, color and depth render targets
++// live in separate host textures, so they never actually share storage even
++// when the guest reuses the same EDRAM base for both. Diablo III's deferred
++// renderer reuses EDRAM base 0x040C as both the scene-color composite and a
++// depth buffer in the same frame; on the RTV path the depth bind steals EDRAM
++// ownership from the color and a lossy cross-type transfer loses the lit scene
++// (black world). This selects how cross-type (color<->depth) ownership steals
++// are handled:
++//   0 = stock Xenia behavior (black world).
++//   1 = block ALL cross-type steals (symmetric) - shows the world but leaves
++//       black bands where the color could not reclaim depth-owned tile rows.
++//   2 = block only DEPTH stealing from COLOR (asymmetric): color may still
++//       claim its tiles from a prior depth owner (and overwrites them), so the
++//       scene resolves intact, while depth can't clobber the color afterwards.
++REXCVAR_DEFINE_INT32(rtv_color_depth_ownership_mode, 0, "GPU",
++                     "Host-RT EDRAM color/depth aliasing ownership: 0=stock, 1=block all "
++                     "cross-type steals, 2=block depth-steals-color (color reclaims with "
++                     "transfer), 3=block depth-steals-color + color reclaims without transfer, "
++                     "4=block all cross-type steals + resolve color directly from its render "
++                     "target, 5=separate color/depth ownership maps, 6=separate maps + clamp "
++                     "ownership claims so they never wrap past EDRAM end (stops the lit-scene "
++                     "composite from clobbering the base-0 gbuffer -> fixes striped lighting)")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++// [D3DIAG] Per-frame RT/draw logging armed from the d3d12 command processor
++// (d3d_screenshot.cpp). Forward-declared here so Update() can record which
++// render targets each draw binds while a capture is armed.
++namespace rex::graphics::d3d12 {
++bool RtLogActive();
++}  // namespace rex::graphics::d3d12
++
+ namespace rex::graphics {
+ 
+ void RenderTargetCache::GetPSIColorFormatInfo(xenos::ColorRenderTargetFormat format,
+@@ -338,14 +371,23 @@ void RenderTargetCache::InitializeCommon() {
+   ownership_ranges_.emplace(std::piecewise_construct, std::forward_as_tuple(uint32_t(0)),
+                             std::forward_as_tuple(xenos::kEdramTileCount, RenderTargetKey(),
+                                                   RenderTargetKey(), RenderTargetKey()));
++  // Seed the mode-5 depth ownership map the same way.
++  ownership_ranges_depth_.emplace(std::piecewise_construct, std::forward_as_tuple(uint32_t(0)),
++                                  std::forward_as_tuple(xenos::kEdramTileCount, RenderTargetKey(),
++                                                        RenderTargetKey(), RenderTargetKey()));
+ }
+ 
+ void RenderTargetCache::DestroyAllRenderTargets(bool shutting_down) {
+   ownership_ranges_.clear();
++  ownership_ranges_depth_.clear();
+   if (!shutting_down) {
+     ownership_ranges_.emplace(std::piecewise_construct, std::forward_as_tuple(uint32_t(0)),
+                               std::forward_as_tuple(xenos::kEdramTileCount, RenderTargetKey(),
+                                                     RenderTargetKey(), RenderTargetKey()));
++    // Reseed the mode-5 depth ownership map too.
++    ownership_ranges_depth_.emplace(std::piecewise_construct, std::forward_as_tuple(uint32_t(0)),
++                                    std::forward_as_tuple(xenos::kEdramTileCount, RenderTargetKey(),
++                                                          RenderTargetKey(), RenderTargetKey()));
+   }
+ 
+   for (const auto& render_target_pair : render_targets_) {
+@@ -656,6 +698,15 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+                                         ? edram_bases_sorted[i + 1].first
+                                         : (xenos::kEdramTileCount + edram_bases_sorted[0].first)) -
+                                        rt_base);
++    // Mode 6: a single bound render target with no viewport gets an
++    // over-estimated height (GetRenderTargetHeight for a narrow pitch spans all
++    // of EDRAM), so its ownership claim wraps the whole EDRAM and steals the
++    // low-base render targets (Diablo's lit scene composite at base 0x040C wraps
++    // around and clobbers the base-0 gbuffer/lighting -> striped lighting). Clamp
++    // the claim so it never wraps past the end of EDRAM.
++    if (REXCVAR_GET(rtv_color_depth_ownership_mode) == 6) {
++      rt_lengths_tiles[i] = std::min(rt_lengths_tiles[i], xenos::kEdramTileCount - rt_base);
++    }
+   }
+ 
+   if (interlock_barrier_only) {
+@@ -690,6 +741,24 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+                     interlock_barrier_only ? nullptr : &last_update_transfers_[rt_bit_index]);
+   }
+ 
++  // [D3DIAG] When a capture is armed, log the render targets this draw binds
++  // (sorted by EDRAM base) plus how many ownership transfers each one pulled in.
++  // This shows where the deferred scene composite renders (color base 0x040C)
++  // and whether a later pass steals those EDRAM tiles (ownership transfer) -
++  // the suspected cause of the black world on the host-render-target path.
++  if (!interlock_barrier_only && rex::graphics::d3d12::RtLogActive()) {
++    std::string line;
++    char tmp[96];
++    for (uint32_t i = 0; i < edram_bases_sorted_count; ++i) {
++      uint32_t bit = edram_bases_sorted[i].second;
++      std::snprintf(tmp, sizeof(tmp), "%s%c%04X/f%u/l%u/x%zu", i ? " " : "",
++                    bit == 0 ? 'D' : 'C', edram_bases_sorted[i].first, resource_formats[bit],
++                    rt_lengths_tiles[i], last_update_transfers_[bit].size());
++      line += tmp;
++    }
++    REXGPU_INFO("[D3DIAG] RTDRAW {}", line);
++  }
++
+   if (interlock_barrier_only) {
+     // No copying transfers or render target bindings - only needed the barrier.
+     return true;
+@@ -838,13 +907,29 @@ void RenderTargetCache::GetHostDepthStoreRectangleInfo(
+ 
+ void RenderTargetCache::GetResolveCopyRectanglesToDump(
+     uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch,
+-    std::vector<ResolveCopyDumpRectangle>& rectangles_out) const {
++    std::vector<ResolveCopyDumpRectangle>& rectangles_out, RenderTarget* forced_source) const {
+   rectangles_out.clear();
+   assert_true(row_length <= pitch);
+   row_length = std::min(row_length, pitch);
+   if (!row_length || !rows) {
+     return;
+   }
++  // Read the whole resolved span from one render target directly
++  // (its base matches the resolve base), bypassing the EDRAM ownership map. This
++  // lets a color resolve read the scene-color render target it drew full-screen
++  // instead of the color/depth-interleaved owners that produce black bands.
++  if (forced_source) {
++    rectangles_out.emplace_back(forced_source, 0, rows, 0, row_length);
++    return;
++  }
++  // Mode 5: a depth resolve reads the separate depth ownership map,
++  // a color resolve reads the color map - so neither sees the other's owners.
++  // This local reference shadows the member for the rest of the function.
++  const std::map<uint32_t, OwnershipRange>& ownership_ranges_ =
++      (REXCVAR_GET(rtv_color_depth_ownership_mode) >= 5 &&
++       GetPath() == Path::kHostRenderTargets && current_resolve_is_depth_)
++          ? ownership_ranges_depth_
++          : this->ownership_ranges_;
+   auto get_rectangles_in_extent = [&](uint32_t extent_start, uint32_t extent_end,
+                                       uint32_t range_local_offset) {
+     // Collect render targets owning ranges within the specified rectangle. The
+@@ -916,6 +1001,25 @@ void RenderTargetCache::GetResolveCopyRectanglesToDump(
+   }
+ }
+ 
++RenderTargetCache::RenderTarget* RenderTargetCache::GetExistingColorResolveSource(
++    const draw_util::ResolveInfo& resolve_info) const {
++  if (GetPath() != Path::kHostRenderTargets || resolve_info.IsCopyingDepth()) {
++    return nullptr;
++  }
++  RenderTargetKey key;
++  key.base_tiles = resolve_info.color_original_base;
++  key.pitch_tiles_at_32bpp = resolve_info.color_edram_info.pitch_tiles;
++  key.msaa_samples = resolve_info.color_edram_info.msaa_samples;
++  key.is_depth = 0;
++  key.resource_format = uint32_t(
++      GetColorResourceFormat(xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format)));
++  auto it = render_targets_.find(key);
++  if (it == render_targets_.end()) {
++    return nullptr;
++  }
++  return it->second;
++}
++
+ void RenderTargetCache::GetResolveCopyDispatchesToDump(
+     uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch,
+     std::vector<ResolveCopyDumpRectangle>& rectangles_out,
+@@ -1286,6 +1390,15 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+   if (length_tiles == 0) {
+     return;
+   }
++  // Mode 5: route depth render targets to a separate ownership map
++  // so color and depth never steal EDRAM ownership from each other. This local
++  // reference shadows the member for the rest of the function (and the capturing
++  // lambda below), keeping the body unchanged.
++  std::map<uint32_t, OwnershipRange>& ownership_ranges_ =
++      (REXCVAR_GET(rtv_color_depth_ownership_mode) >= 5 &&
++       GetPath() == Path::kHostRenderTargets && dest.is_depth)
++          ? ownership_ranges_depth_
++          : this->ownership_ranges_;
+   uint32_t dest_pitch_tiles = dest.GetPitchTiles();
+   bool dest_is_64bpp = dest.Is64bpp();
+   bool host_depth_encoding_different = dest.is_depth && GetPath() == Path::kHostRenderTargets &&
+@@ -1320,6 +1433,34 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+         ++it;
+         continue;
+       }
++      // Cross-type (color<->depth) EDRAM-base reuse doesn't share
++      // host storage on the host-render-target path, so a cross-type ownership
++      // steal only triggers a lossy reinterpreting transfer that destroys
++      // contents still needed for a same-type resolve (Diablo III's scene-color
++      // composite at base 0x040C, rebound as a depth buffer in the same frame).
++      //   mode 1: block all cross-type steals (symmetric) - world shows but with
++      //           black bands where color can't reclaim depth-owned tile rows.
++      //   mode 2: block only depth-steals-color, allow color-steals-depth WITH
++      //           the (lossy) transfer - washed-out garbage where the composite
++      //           doesn't fully overwrite.
++      //   mode 3: block only depth-steals-color, allow color-steals-depth but
++      //           SKIP the lossy transfer (the full-screen composite overwrites
++      //           every pixel, so no garbage is needed) - the intended clean fix.
++      bool skip_cross_transfer = false;
++      if (GetPath() == Path::kHostRenderTargets && !it->second.render_target.IsEmpty() &&
++          it->second.render_target.is_depth != dest.is_depth) {
++        int cd_ownership_mode = REXCVAR_GET(rtv_color_depth_ownership_mode);
++        bool depth_steals_color = dest.is_depth && !it->second.render_target.is_depth;
++        bool block_steal = cd_ownership_mode == 1 || cd_ownership_mode == 4 ||
++                           ((cd_ownership_mode == 2 || cd_ownership_mode == 3) && depth_steals_color);
++        if (block_steal) {
++          ++it;
++          continue;
++        }
++        // Color reclaiming depth-owned tiles: in mode 3 take ownership without
++        // copying the depth contents reinterpreted as color (garbage).
++        skip_cross_transfer = cd_ownership_mode == 3;
++      }
+       // Take over the current range. Handle the tail - may be outside the range
+       // (split in this case) or within it.
+       if (it->second.end_tiles > extent_end) {
+@@ -1327,7 +1468,7 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+         ownership_ranges_.emplace(extent_end, it->second);
+         it->second.end_tiles = extent_end;
+       }
+-      if (transfers_append_out) {
++      if (transfers_append_out && !skip_cross_transfer) {
+         RenderTargetKey transfer_source = it->second.render_target;
+         // Only perform the copying when actually changing the latest owner, not
+         // just the latest host depth owner - the transfer source is expected to
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index b8eae3c..e0168a8 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -31,26 +31,45 @@ REXCVAR_DEFINE_INT32(mnk_user_index, 0, "Input", "Controller slot (0-3) for MnK"
+ REXCVAR_DEFINE_DOUBLE(mnk_sensitivity, 1.0, "Input", "Mouse sensitivity for right stick")
+     .range(0.01, 10.0);
+ 
+-REXCVAR_DEFINE_STRING(keybind_a, "Space", "Input/Keybinds/Controller", "A button");
++// Control-mode split (driven by the launcher / settings overlay):
++//   mnk_mode + !mnk_mouse                 -> keyboard only (mouse does nothing)
++//   mnk_mode + mnk_mouse                  -> keyboard + mouse (mouse = camera/clicks)
++// mnk_cursor_visible chooses whether the OS cursor stays on screen during play.
++REXCVAR_DEFINE_BOOL(mnk_mouse, false, "Input",
++                    "MnK: mouse acts as right stick (camera) + mouse buttons "
++                    "(off = keyboard only, mouse ignored)");
++REXCVAR_DEFINE_BOOL(mnk_cursor_visible, true, "Input",
++                    "MnK: keep the OS cursor visible (false = hide it while playing)");
++
++// Default keyboard-only layout (used when mnk_mode is on). WASD moves; the arrow
++// keys are the D-pad (the right "cruceta": opens the in-game map / quick menus).
++// Action buttons sit on the right-hand cluster. Inventory/map use the popular
++// keys (Tab/I, M). Triggers and the right-stick press also list a mouse button
++// so the SAME defaults work in keyboard+mouse mode (any listed input fires it).
++// Everything is remappable in-game via the F4 settings overlay.
++REXCVAR_DEFINE_STRING(keybind_a, "Space, Return", "Input/Keybinds/Controller", "A button");
+ REXCVAR_DEFINE_STRING(keybind_b, "Shift", "Input/Keybinds/Controller", "B button");
+-REXCVAR_DEFINE_STRING(keybind_x, "R", "Input/Keybinds/Controller", "X button");
+-REXCVAR_DEFINE_STRING(keybind_y, "E", "Input/Keybinds/Controller", "Y button");
+-REXCVAR_DEFINE_STRING(keybind_left_trigger, "RMB", "Input/Keybinds/Controller", "Left trigger");
+-REXCVAR_DEFINE_STRING(keybind_right_trigger, "LMB", "Input/Keybinds/Controller", "Right trigger");
+-REXCVAR_DEFINE_STRING(keybind_left_shoulder, "Q", "Input/Keybinds/Controller", "Left shoulder");
+-REXCVAR_DEFINE_STRING(keybind_right_shoulder, "F", "Input/Keybinds/Controller", "Right shoulder");
++REXCVAR_DEFINE_STRING(keybind_x, "J", "Input/Keybinds/Controller", "X button");
++REXCVAR_DEFINE_STRING(keybind_y, "U", "Input/Keybinds/Controller", "Y button");
++REXCVAR_DEFINE_STRING(keybind_left_trigger, "H, RMB", "Input/Keybinds/Controller", "Left trigger");
++REXCVAR_DEFINE_STRING(keybind_right_trigger, "L, LMB", "Input/Keybinds/Controller",
++                      "Right trigger");
++REXCVAR_DEFINE_STRING(keybind_left_shoulder, "O", "Input/Keybinds/Controller", "Left shoulder");
++REXCVAR_DEFINE_STRING(keybind_right_shoulder, "K", "Input/Keybinds/Controller", "Right shoulder");
+ REXCVAR_DEFINE_STRING(keybind_lstick_up, "W", "Input/Keybinds/Controller", "Left stick up");
+ REXCVAR_DEFINE_STRING(keybind_lstick_down, "S", "Input/Keybinds/Controller", "Left stick down");
+ REXCVAR_DEFINE_STRING(keybind_lstick_left, "A", "Input/Keybinds/Controller", "Left stick left");
+ REXCVAR_DEFINE_STRING(keybind_lstick_right, "D", "Input/Keybinds/Controller", "Left stick right");
+ REXCVAR_DEFINE_STRING(keybind_lstick_press, "C", "Input/Keybinds/Controller", "Left stick press");
+-REXCVAR_DEFINE_STRING(keybind_rstick_press, "MMB", "Input/Keybinds/Controller",
++REXCVAR_DEFINE_STRING(keybind_rstick_press, "V, MMB", "Input/Keybinds/Controller",
+                       "Right stick press");
+-REXCVAR_DEFINE_STRING(keybind_dpad_up, "Up", "Input/Keybinds/Controller", "D-pad up");
++// D-pad = arrow keys (the cruceta). "M" is aliased onto one direction as a
++// tentative map shortcut; swap it in F4 if the console opens the map elsewhere.
++REXCVAR_DEFINE_STRING(keybind_dpad_up, "Up, M", "Input/Keybinds/Controller", "D-pad up");
+ REXCVAR_DEFINE_STRING(keybind_dpad_down, "Down", "Input/Keybinds/Controller", "D-pad down");
+ REXCVAR_DEFINE_STRING(keybind_dpad_left, "Left", "Input/Keybinds/Controller", "D-pad left");
+ REXCVAR_DEFINE_STRING(keybind_dpad_right, "Right", "Input/Keybinds/Controller", "D-pad right");
+-REXCVAR_DEFINE_STRING(keybind_back, "Tab", "Input/Keybinds/Controller", "Back button");
++REXCVAR_DEFINE_STRING(keybind_back, "Tab, I", "Input/Keybinds/Controller", "Back button");
+ REXCVAR_DEFINE_STRING(keybind_start, "Escape", "Input/Keybinds/Controller", "Start button");
+ REXCVAR_DEFINE_STRING(keybind_guide, "", "Input/Keybinds/Controller", "Guide button");
+ 
+@@ -105,11 +124,31 @@ bool MnkInputDriver::IsEnabled() const {
+ }
+ 
+ static bool IsBindPressed(const bool (&key_down)[256], const std::string& cvar_val) {
+-  VirtualKey vk = rex::ui::ParseVirtualKey(cvar_val);
+-  if (vk == VirtualKey::kNone)
+-    return false;
+-  uint16_t idx = static_cast<uint16_t>(vk);
+-  return idx < 256 && key_down[idx];
++  // A bind may list several keys separated by ',' with OR semantics, so one
++  // default can serve both keyboard-only and keyboard+mouse modes. E.g.
++  // "H, RMB" fires when either the H key or the right mouse button is held.
++  size_t pos = 0;
++  while (pos < cvar_val.size()) {
++    size_t comma = cvar_val.find(',', pos);
++    size_t len = (comma == std::string::npos) ? cvar_val.size() - pos : comma - pos;
++    std::string tok = cvar_val.substr(pos, len);
++    // Trim surrounding whitespace.
++    size_t a = tok.find_first_not_of(" \t");
++    if (a != std::string::npos) {
++      size_t b = tok.find_last_not_of(" \t");
++      tok = tok.substr(a, b - a + 1);
++      VirtualKey vk = rex::ui::ParseVirtualKey(tok);
++      if (vk != VirtualKey::kNone) {
++        uint16_t idx = static_cast<uint16_t>(vk);
++        if (idx < 256 && key_down[idx])
++          return true;
++      }
++    }
++    if (comma == std::string::npos)
++      break;
++    pos = comma + 1;
++  }
++  return false;
+ }
+ 
+ X_RESULT MnkInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
+@@ -278,21 +317,37 @@ void MnkInputDriver::UpdateMouseCapture() {
+   if (!attached_window_)
+     return;
+ 
+-  bool should_capture = IsEnabled() && has_focus_ && is_active();
++  bool active = IsEnabled() && has_focus_ && is_active();
++  bool mouse_cam = active && REXCVAR_GET(mnk_mouse);
++  bool cursor_visible = REXCVAR_GET(mnk_cursor_visible);
+ 
+-  if (should_capture && !mouse_captured_) {
++  // Lock + recenter the cursor for smooth mouselook ONLY when the mouse drives
++  // the camera and the cursor is meant to be hidden. With a visible cursor we
++  // still read raw deltas (camera works) but let the pointer roam freely so it
++  // can be used on screen. With the mouse disabled (keyboard-only) we never lock.
++  bool want_lock = mouse_cam && !cursor_visible;
++  // Hide the OS cursor whenever MnK is active and the user wants it hidden
++  // (e.g. keyboard-only mode hides the idle pointer during gameplay).
++  bool want_hidden = active && !cursor_visible;
++
++  if (want_lock && !mouse_captured_) {
+     mouse_captured_ = true;
+-    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
+     attached_window_->CaptureMouse();
+     // Reset deltas to avoid a spike on capture start
+     mouse_dx_ = 0;
+     mouse_dy_ = 0;
+-  } else if (!should_capture && mouse_captured_) {
++  } else if (!want_lock && mouse_captured_) {
+     mouse_captured_ = false;
+-    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
+     attached_window_->ReleaseMouse();
+   }
+ 
++  if (want_hidden != cursor_hidden_) {
++    cursor_hidden_ = want_hidden;
++    attached_window_->SetCursorVisibility(want_hidden
++                                              ? rex::ui::Window::CursorVisibility::kHidden
++                                              : rex::ui::Window::CursorVisibility::kVisible);
++  }
++
+   // Re-center cursor each frame while captured to prevent edge clamping
+   if (mouse_captured_) {
+     CenterCursor();
+@@ -322,7 +377,7 @@ void MnkInputDriver::OnKeyUp(rex::ui::KeyEvent& e) {
+ }
+ 
+ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
+-  if (!IsEnabled() || !has_focus_)
++  if (!IsEnabled() || !has_focus_ || !REXCVAR_GET(mnk_mouse))
+     return;
+   std::lock_guard lock(state_mutex_);
+   switch (e.button()) {
+@@ -360,7 +415,7 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+ }
+ 
+ void MnkInputDriver::OnMouseMove(rex::ui::MouseEvent& e) {
+-  if (!IsEnabled() || !has_focus_)
++  if (!IsEnabled() || !has_focus_ || !REXCVAR_GET(mnk_mouse))
+     return;
+   std::lock_guard lock(state_mutex_);
+   int32_t x = e.x();
+@@ -379,9 +434,12 @@ void MnkInputDriver::OnLostFocus(rex::ui::UISetupEvent&) {
+   mouse_dy_ = 0;
+   if (mouse_captured_ && attached_window_) {
+     mouse_captured_ = false;
+-    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
+     attached_window_->ReleaseMouse();
+   }
++  if (cursor_hidden_ && attached_window_) {
++    cursor_hidden_ = false;
++    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
++  }
+ }
+ 
+ void MnkInputDriver::OnGotFocus(rex::ui::UISetupEvent&) {
+diff --git a/src/kernel/xam/apps/xam_app.cpp b/src/kernel/xam/apps/xam_app.cpp
+index 7f10ece..bff07f7 100644
+--- a/src/kernel/xam/apps/xam_app.cpp
++++ b/src/kernel/xam/apps/xam_app.cpp
+@@ -1,4 +1,4 @@
+-/**
++﻿/**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+  ******************************************************************************
+@@ -60,14 +60,22 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       uint32_t item_count = 0;
+       auto result = e->WriteItems(data->buffer_ptr, buffer, &item_count);
+ 
+-      if (result == X_ERROR_SUCCESS && item_count >= 1) {
+-        if (data->length_ptr) {
+-          auto length_ptr = memory_->TranslateVirtual<be<uint32_t>*>(data->length_ptr);
+-          *length_ptr = 1;
+-        }
+-        return X_E_SUCCESS;
++      // Faithful behavior (reverted the SUCCESS-forcing workaround).
++      // Report the REAL number of items written and propagate WriteItems'
++      // result: X_ERROR_SUCCESS while draining, X_ERROR_NO_MORE_FILES once the
++      // enumerator is empty (the terminator the game's drain loop requires).
++      // The old workaround hardcoded length=1 and forced SUCCESS+length=0 on the
++      // terminator to unblock the title transition, but that broke the loader's
++      // drain semantics and caused the multi-hero "loading hero" hang (
++      // the world-load sub_823EE6E0 waits forever on the streaming event
++      // [ctx+0x8040] because the save enumeration never terminates cleanly).
++      // The profile-xuid fix (xam_content_aggregate.cpp) should keep the title
++      // transition working without this hack now.
++      if (data->length_ptr) {
++        auto length_ptr = memory_->TranslateVirtual<be<uint32_t>*>(data->length_ptr);
++        *length_ptr = item_count;
+       }
+-      return X_E_NO_MORE_FILES;
++      return result;
+     }
+     case 0x00020021: {
+       struct message_data {
+diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
+index 1fb1e16..1969f91 100644
+--- a/src/kernel/xam/xam_content.cpp
++++ b/src/kernel/xam/xam_content.cpp
+@@ -137,6 +137,13 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+ 
+   auto content_manager = REX_KERNEL_STATE()->content_manager();
+ 
++  XContentType d3_ct = content_data.content_type;
++  REXKRNL_INFO(
++      "[D3DIAG] xeXamContentCreate(root='{}', content_type={:08X}, flags={:08X}, "
++      "file_name='{}', overlapped={:08X})",
++      root_name.value(), static_cast<uint32_t>(d3_ct), flags, content_data.file_name(),
++      overlapped_ptr ? overlapped_ptr.guest_address() : 0);
++
+   if (overlapped_ptr && disposition_ptr) {
+     *disposition_ptr = 0;
+   }
+@@ -226,6 +233,8 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+ 
+     extended_error = X_HRESULT_FROM_WIN32(result);
+     length = static_cast<uint32_t>(disposition);
++    REXKRNL_INFO("[D3DIAG] xeXamContentCreate.run('{}') disposition={} result={:08X}",
++                 root_name, static_cast<uint32_t>(disposition), uint32_t(result));
+     return result;
+   };
+ 
+diff --git a/src/kernel/xam/xam_content_aggregate.cpp b/src/kernel/xam/xam_content_aggregate.cpp
+index de4a527..c0ef27d 100644
+--- a/src/kernel/xam/xam_content_aggregate.cpp
++++ b/src/kernel/xam/xam_content_aggregate.cpp
+@@ -136,6 +136,28 @@ u32 XamContentAggregateCreateEnumerator_entry(u64 xuid, u32 device_id, u32 conte
+           }
+         }
+       }
++
++      // [D3 FIX] Diablo III passes a TRUNCATED xuid here (low 32 bits of the
++      // profile xuid, zero-extended -> 0x00000000BABEBABE) but its saves are
++      // stored under the FULL profile xuid (XamContentCreate/Open use
++      // user_profile()->xuid() = 0xB13EBABEBABEBABE). Without this, the save
++      // dir is never searched and enumeration returns 0 items even though the
++      // save exists. The non-aggregate XamContentCreateEnumerator already uses
++      // the profile xuid directly; mirror that here so saves are found.
++      if (userxuid != 0 && userxuid != uint64_t(xuid)) {
++        auto profile_datas = REX_KERNEL_STATE()->content_manager()->ListContent(
++            static_cast<uint32_t>(DummyDeviceId::HDD), userxuid, content_type_enum, title_id);
++        REXKRNL_INFO(
++            "[D3DIAG] profile-xuid ListContent(xuid={:016X}, type={:08X}, title={:08X}) -> {} dirs",
++            userxuid, uint32_t(content_type), uint32_t(title_id), profile_datas.size());
++        for (const auto& content_data : profile_datas) {
++          auto item = e->AppendItem();
++          assert_not_null(item);
++          if (item) {
++            *item = content_data;
++          }
++        }
++      }
+     }
+   }
+ 
+@@ -143,8 +165,9 @@ u32 XamContentAggregateCreateEnumerator_entry(u64 xuid, u32 device_id, u32 conte
+     AddODDContentTest(e, content_type_enum);
+   }
+ 
+-  REXKRNL_DEBUG("XamContentAggregateCreateEnumerator: added {} items to enumerator",
+-                e->item_count());
++  REXKRNL_INFO("[D3DIAG] XamContentAggregateCreateEnumerator(xuid={:016X}, device={:08X}, content_type={:08X}, unk3={:08X}): added {} items",
++               uint64_t(xuid), uint32_t(device_id), uint32_t(content_type), uint32_t(unk3),
++               e->item_count());
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
+diff --git a/src/kernel/xam/xam_enum.cpp b/src/kernel/xam/xam_enum.cpp
+index 9dcab94..4f04a00 100644
+--- a/src/kernel/xam/xam_enum.cpp
++++ b/src/kernel/xam/xam_enum.cpp
+@@ -80,6 +80,8 @@ u32 XamEnumerate_entry(u32 handle, u32 flags, mapped_void buffer, u32 buffer_len
+   if (!overlapped && items_returned) {
+     *items_returned = dummy;
+   }
++  REXKRNL_INFO("[D3DIAG] XamEnumerate(handle={:08X}, overlapped={:08X}) -> result={:08X} items={}",
++               uint32_t(handle), overlapped.guest_address(), uint32_t(result), dummy);
+   return result;
+ }
+ 
+diff --git a/src/kernel/xam/xam_info.cpp b/src/kernel/xam/xam_info.cpp
+index 1fda053..1d44627 100644
+--- a/src/kernel/xam/xam_info.cpp
++++ b/src/kernel/xam/xam_info.cpp
+@@ -294,7 +294,17 @@ void XamLoaderTerminateTitle_entry() {
+ }
+ 
+ u32 XamAlloc_entry(u32 unk, u32 size, mapped_u32 out_ptr) {
+-  assert_true(unk == 0);
++  // Diablo III calls XamAlloc with a non-zero first arg (heap-type/flags). The
++  // original Xenia assert(unk == 0) is too strict; the impl ignores `unk`
++  // anyway and just allocates from the system heap, so downgrade to a one-shot
++  // warning instead of aborting (which pops a CRT assert dialog in Debug).
++  if (unk != 0) {
++    static bool warned = false;
++    if (!warned) {
++      warned = true;
++      REXKRNL_WARN("XamAlloc: ignoring non-zero unk=0x{:08X}", unk);
++    }
++  }
+ 
+   // Allocate from the heap. Not sure why XAM does this specially, perhaps
+   // it keeps stuff in a separate heap?
+diff --git a/src/kernel/xam/xam_input.cpp b/src/kernel/xam/xam_input.cpp
+index 80c3634..b25abca 100644
+--- a/src/kernel/xam/xam_input.cpp
++++ b/src/kernel/xam/xam_input.cpp
+@@ -19,6 +19,13 @@
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xtypes.h>
+ 
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <mutex>
++
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
+ namespace rex {
+@@ -26,6 +33,125 @@ namespace kernel {
+ namespace xam {
+ using namespace rex::system;
+ 
++// ---------------------------------------------------------------------------
++// D3 button injection (debug). Lets us "press a controller button" without a
++// physical pad / window focus, by feeding the press straight into the same path
++// the game polls (XamInputGetState). The button mask is read from a control
++// file (hex X_INPUT_GAMEPAD_* bits, e.g. 1000 = A, 0010 = Start). Path comes
++// from the D3_INPUT_INJECT env var, defaulting to
++// D:\Diablo3_ReXGlue\port\input_inject.txt. The file is polled at most every
++// 30ms so the per-frame GetState calls stay cheap.
++namespace {
++// Injected controller state read from the control file. Format (whitespace
++// separated): "<button_mask_hex> [lx_dec] [ly_dec]" e.g. "1000" (A) or
++// "0 0 32767" (left stick full up = walk forward). lx/ly are int16 thumb values.
++struct InjectState {
++  uint16_t mask = 0;
++  int16_t lx = 0;
++  int16_t ly = 0;
++};
++
++InjectState D3ReadInject() {
++  static std::mutex m;
++  static InjectState cached{};
++  static int64_t next_check_ms = 0;
++  std::lock_guard<std::mutex> lk(m);
++
++  auto now = std::chrono::steady_clock::now().time_since_epoch();
++  int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
++  if (now_ms < next_check_ms) {
++    return cached;
++  }
++  next_check_ms = now_ms + 30;
++
++  const char* path = std::getenv("D3_INPUT_INJECT");
++  if (!path || !*path) {
++    path = "D:\\Diablo3_ReXGlue\\port\\input_inject.txt";
++  }
++  InjectState s{};
++  if (FILE* f = std::fopen(path, "rb")) {
++    char buf[64] = {0};
++    size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
++    std::fclose(f);
++    if (n) {
++      char* end = nullptr;
++      unsigned long mask = std::strtoul(buf, &end, 16);
++      long lx = 0, ly = 0;
++      if (end && *end) lx = std::strtol(end, &end, 10);
++      if (end && *end) ly = std::strtol(end, &end, 10);
++      auto clamp16 = [](long v) -> int16_t {
++        if (v < -32768) v = -32768;
++        if (v > 32767) v = 32767;
++        return static_cast<int16_t>(v);
++      };
++      s.mask = static_cast<uint16_t>(mask);
++      s.lx = clamp16(lx);
++      s.ly = clamp16(ly);
++    }
++  }
++  cached = s;
++  return s;
++}
++
++uint16_t D3ReadInjectMask() { return D3ReadInject().mask; }
++
++// Edge-detected keystroke injection from the same inject mask. Menu/frontend
++// navigation and (critically for D3) the cutscene-skip path poll
++// XamInputGetKeystroke, which returns discrete KEYDOWN/KEYUP edge events rather
++// than a held button mask. Synthesizing those edges here allows synthetic input to skip the
++// intro cinematic and drive menus without a physical pad. Maps each gamepad bit
++// to its VK_PAD_* code; emits one KEYDOWN when a bit goes 0->1 and one KEYUP when
++// it goes 1->0. Returns true and fills *vk_out/*flags_out if an event is queued.
++bool D3NextInjectKeystroke(uint16_t* vk_out, uint16_t* flags_out) {
++  struct KeyMap {
++    uint16_t bit;
++    uint16_t vk;
++  };
++  static const KeyMap kMap[] = {
++      {0x1000, 0x5800},  // A
++      {0x2000, 0x5801},  // B
++      {0x4000, 0x5802},  // X
++      {0x8000, 0x5803},  // Y
++      {0x0200, 0x5804},  // RB -> RShoulder
++      {0x0100, 0x5805},  // LB -> LShoulder
++      {0x0001, 0x5810},  // DPad Up
++      {0x0002, 0x5811},  // DPad Down
++      {0x0004, 0x5812},  // DPad Left
++      {0x0008, 0x5813},  // DPad Right
++      {0x0010, 0x5814},  // Start
++      {0x0020, 0x5815},  // Back
++  };
++  static std::mutex m;
++  static uint16_t last_mask = 0;
++  static uint16_t pending_down = 0;
++  static uint16_t pending_up = 0;
++  std::lock_guard<std::mutex> lk(m);
++  uint16_t mask = D3ReadInjectMask();
++  if (mask != last_mask) {
++    pending_down |= static_cast<uint16_t>(mask & ~last_mask);
++    pending_up |= static_cast<uint16_t>(~mask & last_mask);
++    last_mask = mask;
++  }
++  for (const auto& e : kMap) {
++    if (pending_down & e.bit) {
++      pending_down &= static_cast<uint16_t>(~e.bit);
++      *vk_out = e.vk;
++      *flags_out = 0x0001;  // X_INPUT_KEYSTROKE_KEYDOWN
++      return true;
++    }
++  }
++  for (const auto& e : kMap) {
++    if (pending_up & e.bit) {
++      pending_up &= static_cast<uint16_t>(~e.bit);
++      *vk_out = e.vk;
++      *flags_out = 0x0002;  // X_INPUT_KEYSTROKE_KEYUP
++      return true;
++    }
++  }
++  return false;
++}
++}  // namespace
++
+ using rex::input::X_INPUT_CAPABILITIES;
+ using rex::input::X_INPUT_KEYSTROKE;
+ using rex::input::X_INPUT_STATE;
+@@ -112,7 +238,34 @@ u32 XamInputGetState_entry(u32 user_index, u32 flags, ppc_ptr_t<X_INPUT_STATE> i
+   }
+ 
+   auto* is = input_system();
+-  return is->GetState(actual_user_index, input_state);
++  auto result = is->GetState(actual_user_index, input_state);
++
++  // Debug input injection: force buttons and/or the left stick onto user 0 so we
++  // can drive the UI AND walk the character without a physical pad. See
++  // D3ReadInject above for the control-file format.
++  InjectState inj = D3ReadInject();
++  bool injecting = inj.mask || inj.lx || inj.ly;
++  if (injecting && input_state && actual_user_index == 0) {
++    if (result != X_ERROR_SUCCESS) {
++      // No real controller connected - synthesize a connected gamepad.
++      input_state->gamepad.left_trigger = 0;
++      input_state->gamepad.right_trigger = 0;
++      input_state->gamepad.thumb_lx = inj.lx;
++      input_state->gamepad.thumb_ly = inj.ly;
++      input_state->gamepad.thumb_rx = 0;
++      input_state->gamepad.thumb_ry = 0;
++      input_state->gamepad.buttons = inj.mask;
++    } else {
++      input_state->gamepad.buttons =
++          static_cast<uint16_t>(input_state->gamepad.buttons | inj.mask);
++      if (inj.lx) input_state->gamepad.thumb_lx = inj.lx;
++      if (inj.ly) input_state->gamepad.thumb_ly = inj.ly;
++    }
++    static std::atomic<uint32_t> pkt{0};
++    input_state->packet_number = pkt.fetch_add(1, std::memory_order_relaxed) + 1;
++    result = X_ERROR_SUCCESS;
++  }
++  return result;
+ }
+ 
+ // https://msdn.microsoft.com/en-us/library/windows/desktop/microsoft.directx_sdk.reference.xinputsetstate(v=vs.85).aspx
+@@ -153,6 +306,18 @@ u32 XamInputGetKeystroke_entry(u32 user_index, u32 flags, ppc_ptr_t<X_INPUT_KEYS
+     actual_user_index = 0;
+   }
+ 
++  if (actual_user_index == 0) {
++    uint16_t inj_vk, inj_flags;
++    if (D3NextInjectKeystroke(&inj_vk, &inj_flags)) {
++      keystroke->virtual_key = inj_vk;
++      keystroke->unicode = 0;
++      keystroke->flags = inj_flags;
++      keystroke->user_index = 0;
++      keystroke->hid_code = 0;
++      return X_ERROR_SUCCESS;
++    }
++  }
++
+   auto* is = input_system();
+   return is->GetKeystroke(actual_user_index, flags, keystroke);
+ }
+@@ -175,6 +340,19 @@ u32 XamInputGetKeystrokeEx_entry(mapped_u32 user_index_ptr, u32 flags,
+     user_index = 0;
+   }
+ 
++  if (user_index == 0) {
++    uint16_t inj_vk, inj_flags;
++    if (D3NextInjectKeystroke(&inj_vk, &inj_flags)) {
++      keystroke->virtual_key = inj_vk;
++      keystroke->unicode = 0;
++      keystroke->flags = inj_flags;
++      keystroke->user_index = 0;
++      keystroke->hid_code = 0;
++      *user_index_ptr = 0;
++      return X_ERROR_SUCCESS;
++    }
++  }
++
+   auto* is = input_system();
+   auto result = is->GetKeystroke(user_index, flags, keystroke);
+   if (XSUCCEEDED(result)) {
+diff --git a/src/kernel/xam/xam_msg.cpp b/src/kernel/xam/xam_msg.cpp
+index 704eb0c..4f4ea12 100644
+--- a/src/kernel/xam/xam_msg.cpp
++++ b/src/kernel/xam/xam_msg.cpp
+@@ -34,6 +34,20 @@ u32 XMsgInProcessCall_entry(u32 app, u32 message, u32 arg1, u32 arg2) {
+   if (result == X_ERROR_NOT_FOUND) {
+     REXKRNL_ERROR("XMsgInProcessCall: app {:08X} undefined", app);
+   }
++  // [D3DIAG] dedup by (app,message,result): trace which XAM app message the
++  // storage flow dispatches and what it returns. A persistently-failing message
++  // (e.g. result!=0) that the game retries every frame stalls the title->menu
++  // transition.
++  {
++    static uint32_t d3_last = 0xFFFFFFFF;
++    uint32_t key = (app & 0xFFFF) ^ ((message & 0xFF) << 16) ^ ((result & 0xFF) << 24);
++    if (key != d3_last) {
++      REXKRNL_INFO("[D3DIAG] XMsgInProcessCall app={:08X} message={:08X} arg1={:08X} arg2={:08X} -> result={:08X}",
++                   uint32_t(app), uint32_t(message), uint32_t(arg1), uint32_t(arg2),
++                   uint32_t(result));
++      d3_last = key;
++    }
++  }
+   return result;
+ }
+ 
+diff --git a/src/kernel/xam/xam_notify.cpp b/src/kernel/xam/xam_notify.cpp
+index 9abcef6..0777669 100644
+--- a/src/kernel/xam/xam_notify.cpp
++++ b/src/kernel/xam/xam_notify.cpp
+@@ -36,8 +36,8 @@ uint32_t xeXamNotifyCreateListener(uint64_t mask, uint32_t is_system, uint32_t m
+   // Handle ref is incremented, so return that.
+   uint32_t handle = listener->handle();
+ 
+-  REXKRNL_DEBUG(
+-      "XamNotifyCreateListener(mask={:#018x}, is_system={}, max_version={}) -> handle={:08X}", mask,
++  REXKRNL_INFO(
++      "[D3DIAG] XamNotifyCreateListener(mask={:#018x}, is_system={}, max_version={}) -> handle={:08X}", mask,
+       is_system, max_version, handle);
+ 
+   return handle;
+@@ -89,8 +89,8 @@ u32 XNotifyGetNext_entry(u32 handle, u32 match_id, mapped_u32 id_ptr, mapped_u32
+   }
+ 
+   if (dequeued) {
+-    REXKRNL_NOISY_DEBUG("XNotifyGetNext({:08X}, {:08X}) -> id={:#x}, param={}", uint32_t(handle),
+-                        uint32_t(match_id), id, param);
++    REXKRNL_INFO("[D3DIAG] XNotifyGetNext({:08X}, {:08X}) -> id={:#x}, param={}", uint32_t(handle),
++                 uint32_t(match_id), id, param);
+   }
+   return dequeued ? 1 : 0;
+ }
+diff --git a/src/kernel/xam/xam_task.cpp b/src/kernel/xam/xam_task.cpp
+index e0e7dab..7c54eef 100644
+--- a/src/kernel/xam/xam_task.cpp
++++ b/src/kernel/xam/xam_task.cpp
+@@ -54,9 +54,11 @@ u32 XamTaskSchedule_entry(mapped_void callback, ppc_ptr_t<XTASK_MESSAGE> message
+   // Stack must be aligned to 16kb pages
+   stack_size = std::max((uint32_t)0x4000, ((stack_size + 0xFFF) & 0xFFFFF000));
+ 
+-  auto thread =
+-      object_ref<XThread>(new XThread(REX_KERNEL_STATE(), stack_size, 0, callback.guest_address(),
+-                                      message.guest_address(), 0, true));
++  // Create suspended so we can flag the thread before it can run (and possibly
++  // exit) - see set_free_native_on_exit below.
++  auto thread = object_ref<XThread>(
++      new XThread(REX_KERNEL_STATE(), stack_size, 0, callback.guest_address(),
++                  message.guest_address(), X_CREATE_SUSPENDED, true));
+ 
+   X_STATUS result = thread->Create();
+ 
+@@ -66,6 +68,27 @@ u32 XamTaskSchedule_entry(mapped_void callback, ppc_ptr_t<XTASK_MESSAGE> message
+     return result;
+   }
+ 
++  // This is a fire-and-forget task: the guest gets the fake handle 12345 above
++  // and the real thread handle is never closed, so the thread's XObject (and its
++  // guest X_KTHREAD native block) would never be reclaimed. Diablo III schedules
++  // ~64 of these per second, leaking guest system-heap memory until it is
++  // exhausted and the storage flow stalls. Have the thread free its own native
++  // object on exit; nobody ever queries its exit_status (completion is signalled
++  // via the message's event_handle).
++  thread->set_free_native_on_exit(true);
++  thread->Resume();
++
++  // [D3DIAG] Dedup: XamTaskSchedule fires ~64/s with the same callback; only log
++  // when the callback address (or arg) changes, to trace the storage flow.
++  {
++    static uint32_t d3_last_cb = 0xFFFFFFFF;
++    if (callback.guest_address() != d3_last_cb) {
++      REXKRNL_INFO("[D3DIAG] XamTaskSchedule cb={:08X} arg={:08X}", callback.guest_address(),
++                   message.guest_address());
++      d3_last_cb = callback.guest_address();
++    }
++  }
++
+   REXKRNL_DEBUG("XAM task ({:08X}) scheduled asynchronously", callback.guest_address());
+ 
+   return X_STATUS_SUCCESS;
+diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
+index 0145a56..2f61c4a 100644
+--- a/src/kernel/xam/xam_ui.cpp
++++ b/src/kernel/xam/xam_ui.cpp
+@@ -499,10 +499,10 @@ u32 XamShowKeyboardUI_entry(u32 user_index, u32 flags, mapped_wstring default_te
+ u32 XamShowDeviceSelectorUI_entry(u32 user_index, u32 content_type, u32 content_flags,
+                                   u64 total_requested, mapped_u32 device_id_ptr,
+                                   mapped_void overlapped) {
+-  REXKRNL_DEBUG("XamShowDeviceSelectorUI({:08X}, {:08X}, {:08X}, {:016X}, {:08X}, {:08X})",
+-                uint32_t(user_index), uint32_t(content_type), uint32_t(content_flags),
+-                uint64_t(total_requested), device_id_ptr.guest_address(),
+-                overlapped.guest_address());
++  REXKRNL_INFO("[D3DIAG] XamShowDeviceSelectorUI({:08X}, {:08X}, {:08X}, {:016X}, {:08X}, {:08X})",
++               uint32_t(user_index), uint32_t(content_type), uint32_t(content_flags),
++               uint64_t(total_requested), device_id_ptr.guest_address(),
++               overlapped.guest_address());
+   return xeXamDispatchHeadless(
+       [device_id_ptr]() -> X_RESULT {
+         // NOTE: 0x00000001 is our dummy device ID from xam_content.cc
+diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
+index b84e9a4..7850087 100644
+--- a/src/kernel/xam/xam_user.cpp
++++ b/src/kernel/xam/xam_user.cpp
+@@ -73,6 +73,17 @@ u32 XamUserGetSigninState_entry(u32 user_index) {
+       signin_state = user_profile->signin_state();
+     }
+   }
++  // [D3DIAG] dedup by (user_index, state) to trace whether the game sees a
++  // signed-in user without flooding (called frequently).
++  {
++    static uint32_t d3_last = 0xFFFFFFFF;
++    uint32_t key = (user_index << 8) | (signin_state & 0xFF);
++    if (key != d3_last) {
++      REXKRNL_INFO("[D3DIAG] XamUserGetSigninState(user={}) -> {}", uint32_t(user_index),
++                   signin_state);
++      d3_last = key;
++    }
++  }
+   return signin_state;
+ }
+ 
+@@ -476,6 +487,8 @@ u32 XamUserAreUsersFriends_entry(u32 user_index, u32 unk1, u32 unk2, mapped_u32
+ }
+ 
+ u32 XamShowSigninUI_entry(u32 unk, u32 unk_mask) {
++  REXKRNL_INFO("[D3DIAG] XamShowSigninUI(unk={:08X}, mask={:08X})", uint32_t(unk),
++               uint32_t(unk_mask));
+   // Mask values vary. Probably matching user types? Local/remote?
+ 
+   // To fix game modes that display a 4 profile signin UI (even if playing
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_memory.cpp b/src/kernel/xboxkrnl/xboxkrnl_memory.cpp
+index 8684eda..76cf19c 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_memory.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_memory.cpp
+@@ -261,7 +261,13 @@ u32 NtFreeVirtualMemory_entry(mapped_u32 base_addr_ptr, mapped_u32 region_size_p
+   // _In_     BOOLEAN DebugMemory
+ 
+   // Set to TRUE when freeing external devkit memory.
+-  assert_true(debug_memory == 0);
++  // [PARCHE PORT D3] Diablo III llama NtFreeVirtualMemory con debug_memory=1 al
++  // hacer teardown de la cache (worker sub_82D8CD90). En el host no existe un heap
++  // "debug" separado: la asignacion vive en el guest heap normal, asi que el flag es
++  // un no-op y liberamos igual. El assert_true(debug_memory==0) original disparaba
++  // _wassert in Debug runtime spins at ~12% CPU and stalls boot. Xenia ignores it too. (Confirmado via WinDbg: stack ucrtbased!wassert <- NtFreeVirtualMemory_entry.)
++  (void)debug_memory;
+ 
+   if (!base_addr_value) {
+     return X_STATUS_MEMORY_NOT_ALLOCATED;
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index 67f7070..baa6716 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -23,6 +23,9 @@
+ #include <rex/system/function_dispatcher.h>
+ #include <rex/system/thread_state.h>
+ 
++#include <mutex>
++#include <unordered_set>
++
+ namespace rex::runtime {
+ 
+ namespace {
+@@ -35,8 +38,18 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+ }  // namespace
+ 
+ static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
+-  REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+-            ctx.last_indirect_target);
++  // [D3 s9e] ENUMERATION MODE (diagnostic): instead of aborting, log each missing
++  // guest function once and continue as a no-op, so one run reveals ALL unregistered
++  // indirect targets to batch into diablo3_overrides.toml. A no-op leaves r3 stale,
++  // so downstream behavior may be wrong/crash later -- this is NOT a correctness fix.
++  static std::mutex s_mtx;
++  static std::unordered_set<uint32_t> s_seen;
++  uint32_t addr = ctx.last_indirect_target;
++  bool isNew;
++  { std::lock_guard<std::mutex> lk(s_mtx); isNew = s_seen.insert(addr).second; }
++  if (isNew) {
++    REXKRNL_WARN("[D3DIAG s9e] MISSING indirect function 0x{:08X} (no-op stub)", addr);
++  }
+ }
+ 
+ PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
+diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
+index 7a62617..8237a66 100644
+--- a/src/system/kernel_state.cpp
++++ b/src/system/kernel_state.cpp
+@@ -1043,8 +1043,8 @@ void KernelState::BroadcastNotification(XNotificationID id, uint32_t data) {
+   std::vector<object_ref<XNotifyListener>> snapshot;
+   {
+     auto global_lock = global_critical_region_.Acquire();
+-    REXSYS_DEBUG("BroadcastNotification(id={:#x}, data={}) to {} listeners",
+-                 static_cast<uint32_t>(id), data, notify_listeners_.size());
++    REXSYS_INFO("[D3DIAG] BroadcastNotification(id={:#x}, data={}) to {} listeners",
++                static_cast<uint32_t>(id), data, notify_listeners_.size());
+     snapshot = notify_listeners_;
+   }
+   for (const auto& notify_listener : snapshot) {
+@@ -1063,6 +1063,9 @@ void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
+   XOverlappedSetExtendedError(ptr, extended_error);
+   XOverlappedSetLength(ptr, length);
+   X_HANDLE event_handle = XOverlappedGetEvent(ptr);
++  uint32_t routine = XOverlappedGetCompletionRoutine(ptr);
++  X_HANDLE ctx_thread = XOverlappedGetContext(ptr);
++  bool apc_thread_found = false;
+   if (event_handle) {
+     auto ev = object_table()->LookupObject<XEvent>(event_handle);
+     assert_not_null(ev);
+@@ -1070,15 +1073,31 @@ void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
+       ev->Set(0, false);
+     }
+   }
+-  if (XOverlappedGetCompletionRoutine(ptr)) {
++  if (routine) {
+     X_HANDLE thread_handle = XOverlappedGetContext(ptr);
+     auto thread = object_table()->LookupObject<XThread>(thread_handle);
+     if (thread) {
++      apc_thread_found = true;
+       // Queue APC on the thread that requested the overlapped operation.
+-      uint32_t routine = XOverlappedGetCompletionRoutine(ptr);
+       thread->EnqueueApc(routine, result, length, overlapped_ptr);
+     }
+   }
++  // [D3DIAG] Diagnose lost completions: an overlapped with a completion routine
++  // (APC) but no event, whose requesting thread has already exited (common for
++  // fire-and-forget XAM task threads), will never deliver its callback.
++  // Dedup by (overlapped,result) so a 64/s retry logs once per state change.
++  {
++    static uint32_t d3_last_ov = 0;
++    static uint32_t d3_last_res = 0xFFFFFFFF;
++    if (overlapped_ptr != d3_last_ov || result != d3_last_res) {
++      REXSYS_INFO(
++          "[D3DIAG] CompleteOverlappedEx ov={:08X} result={:08X} event={:08X} routine={:08X} ctxThread={:08X} apcThreadFound={}",
++          overlapped_ptr, uint32_t(result), uint32_t(event_handle), routine, uint32_t(ctx_thread),
++          apc_thread_found);
++      d3_last_ov = overlapped_ptr;
++      d3_last_res = result;
++    }
++  }
+ }
+ 
+ void KernelState::CompleteOverlappedImmediate(uint32_t overlapped_ptr, X_RESULT result) {
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+index bd6c797..8554400 100644
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -17,6 +17,7 @@
+ #include <fmt/format.h>
+ 
+ #include <rex/filesystem.h>
++#include <rex/logging.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/stfs_container_device.h>
+ #include <rex/string.h>
+@@ -149,6 +150,8 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
+   // content_root/xuid/title_id/type_name/*
+   auto package_root = ResolvePackageRoot(xuid, content_type, title_id);
+   auto file_infos = rex::filesystem::ListFiles(package_root);
++  REXSYS_INFO("[D3DIAG] ListContent root='{}' -> {} entries",
++              rex::path_to_utf8(package_root), file_infos.size());
+   for (const auto& file_info : file_infos) {
+     if (file_info.type != rex::filesystem::FileInfo::Type::kDirectory) {
+       // Directories only.
+diff --git a/src/system/xobject.cpp b/src/system/xobject.cpp
+index d358f39..045509c 100644
+--- a/src/system/xobject.cpp
++++ b/src/system/xobject.cpp
+@@ -52,17 +52,26 @@ XObject::~XObject() {
+   // assert_true(handles_.empty());
+   // assert_zero(pointer_ref_count_);
+ 
+-  if (allocated_guest_object_) {
+-    uint32_t ptr = guest_object_ptr_ - sizeof(X_OBJECT_HEADER);
+-    auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(ptr);
++  FreeNativeObject();
++}
+ 
+-    // Free the object creation info
+-    if (header->object_type_ptr) {
+-      memory()->SystemHeapFree(header->object_type_ptr);
+-    }
++void XObject::FreeNativeObject() {
++  if (!allocated_guest_object_) {
++    return;
++  }
++  uint32_t ptr = guest_object_ptr_ - sizeof(X_OBJECT_HEADER);
++  auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(ptr);
+ 
+-    memory()->SystemHeapFree(ptr);
++  // Free the object creation info
++  if (header->object_type_ptr) {
++    memory()->SystemHeapFree(header->object_type_ptr);
+   }
++
++  memory()->SystemHeapFree(ptr);
++
++  // Mark as freed so a later ~XObject does not double-free.
++  allocated_guest_object_ = false;
++  guest_object_ptr_ = 0;
+ }
+ 
+ rex::Runtime* XObject::emulator() const {
+diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
+index e6766c8..e629eac 100644
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -529,13 +529,65 @@ X_STATUS XThread::Exit(int exit_code) {
+   // ExCreateThread fail even though the old threads are no longer running.
+   FreeStack();
+ 
++  // Same reasoning for the rest of the per-thread guest allocations (scratch,
++  // TLS block, KPCR). These are only otherwise freed in ~XThread, but the thread
++  // object can outlive its execution indefinitely when nothing ever closes its
++  // handle - e.g. fire-and-forget XamTaskSchedule tasks, of which Diablo III
++  // schedules ~64/second. The TLS block in particular is multiple megabytes, so
++  // leaking it per exited thread exhausts the guest heap in minutes. Free them
++  // here and null the members so ~XThread does not double-free. The KTHREAD
++  // native object (which holds the queryable exit_status) is deliberately left
++  // alone - that one does belong to the handle lifetime.
++  if (scratch_address_) {
++    kernel_state_->memory()->SystemHeapFree(scratch_address_);
++    scratch_address_ = 0;
++  }
++  if (tls_static_address_) {
++    kernel_state_->memory()->SystemHeapFree(tls_static_address_);
++    tls_static_address_ = 0;
++    tls_dynamic_address_ = 0;
++  }
++  if (pcr_address_) {
++    kernel_state_->memory()->SystemHeapFree(pcr_address_);
++    pcr_address_ = 0;
++  }
++
+   // NOTE: unless PlatformExit fails, expect it to never return!
+   current_xthread_tls_ = nullptr;
+   PROFILE_THREAD_EXIT();
+ 
+   running_ = false;
++
++  // Tear down the execution fiber HERE, on the owning thread. Execute() converts
++  // this host thread into a fiber via ConvertThreadToFiber; Windows only frees
++  // such a thread's stack when the fiber is converted back
++  // (ConvertFiberToThread) before the thread exits. That teardown otherwise
++  // lives in ~XThread, but the destructor (a) may never run when nothing closes
++  // the thread handle - e.g. fire-and-forget XamTaskSchedule tasks, of which
++  // Diablo III schedules ~64/second - and (b) when it does run, runs on whatever
++  // thread releases the last reference, which is the WRONG thread for
++  // ConvertFiberToThread. Without this, every exited task leaks its ~4MB host
++  // stack and the process OOMs in minutes. Null main_fiber_ so ~XThread does not
++  // try to destroy it again.
++  if (main_fiber_) {
++    main_fiber_->Destroy();
++    main_fiber_ = nullptr;
++  }
++
+   ReleaseHandle();
+ 
++  // Fire-and-forget threads (XamTaskSchedule) never have their handle closed by
++  // the guest, so ~XObject never runs and the guest X_KTHREAD native object
++  // leaks. With ~64 such tasks/second, the leaked native objects exhaust the
++  // 256MB guest system-heap window in minutes (manifests as
++  // "BaseHeap::Alloc failed to find contiguous range" / "Unable to allocate
++  // thread local storage block" and stalls Diablo III's storage flow). Free it
++  // here. Safe only because completion is signalled via the task message's
++  // event_handle, not this thread's handle, so nothing queries exit_status.
++  if (free_native_on_exit_) {
++    FreeNativeObject();
++  }
++
+   // NOTE: this does not return!
+   rex::thread::Thread::Exit(exit_code);
+   return X_STATUS_SUCCESS;
+@@ -557,6 +609,12 @@ X_STATUS XThread::Terminate(int exit_code) {
+     // the thread object before Thread::Exit() reaches pthread_exit().
+     auto self = retain_object(this);
+     FreeStack();
++    // Destroy the fiber on the owning thread so the host stack is reclaimed on
++    // exit (see the detailed note in Exit()).
++    if (main_fiber_) {
++      main_fiber_->Destroy();
++      main_fiber_ = nullptr;
++    }
+     ReleaseHandle();
+     rex::thread::Thread::Exit(exit_code);
+   } else {
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index c6fdbcf..482df66 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -209,8 +209,19 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+     auto* input_sys = static_cast<rex::input::InputSystem*>(runtime_->input_system());
+     if (input_sys) {
+       input_sys->SetActiveCallback([this]() {
+-        if (!debug_overlay_ && !console_overlay_ && !settings_overlay_)
++        // Only trust ImGui's input-capture flags while a dialog is actually
++        // open. Once the last dialog closes the drawer detaches and stops
++        // updating io, FREEZING WantTextInput / WantCaptureMouse at their last
++        // (in-dialog) values - reading them then would latch guest input off
++        // forever (this was the "keyboard dead after naming a hero" bug). With
++        // no dialog open, the game is always active.
++        if (!imgui_drawer_->has_dialogs())
+           return true;
++        // A text field is taking input (e.g. the hero-name keyboard dialog):
++        // suppress guest input so typing doesn't also drive the emulated pad.
++        if (imgui_drawer_->GetIO().WantTextInput)
++          return false;
++        // Other dialogs/overlays: keep the game active unless ImGui grabs the mouse.
+         return !imgui_drawer_->GetIO().WantCaptureMouse;
+       });
+     }
+diff --git a/thirdparty/libmspack b/thirdparty/libmspack
+--- a/thirdparty/libmspack
++++ b/thirdparty/libmspack
+@@ -1 +1 @@
+-Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837
++Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837-dirty
