@@ -1,8 +1,7 @@
 # Souls of the Reaper
 
-Xbox 360 → PC port of Diablo III built on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — an AOT recompiler that translates the Xbox 360 PPC binary to native x64 C++, with a Xenia-based kernel HLE, D3D12 GPU (Xenos), XMA audio, and threading.
-
-**Status:** Playable at 60fps stable (RelWithDebInfo / -O2). ROV render path required.
+Xbox 360 → PC port of Diablo III built on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — an AOT recompiler that translates the Xbox 360 PPC binary to native x64 C++, with a Xenia-based kernel HLE.
+**Status:** Playable at 60fps stable. ROV render path required.
 
 ---
 
@@ -105,28 +104,6 @@ In `port/generated/default/diablo3_recomp.108.cpp`, replace the bodies of `sub_8
 
 ---
 
-## Project Layout
-
-```
-souls-of-the-reaper/
-├── launch.bat             # Game launcher (control mode + FPS selector)
-├── setup.ps1              # First-run setup: extracts game data from ISO
-├── apply_config.ps1       # TOML config merger used by launch.bat
-├── patches/
-│   ├── rexglue-sdk.patch  # SDK modifications (git diff)
-│   └── d3d_screenshot.cpp # New file added to the SDK
-└── port/
-    ├── src/               # Port-specific C++ (kernel overrides, FATX cache device)
-    ├── diablo3_manifest.toml
-    ├── diablo3_overrides.toml
-    ├── CMakeLists.txt
-    ├── CMakePresets.json
-    └── build.ps1
-```
-
----
-
 ## Credits
 
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — recompiler + runtime (based on [Xenia](https://xenia.jp/))
-- Blizzard Entertainment — Diablo III
