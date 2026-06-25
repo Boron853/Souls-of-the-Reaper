@@ -1,0 +1,56 @@
+# Game assets - DO NOT include (copyrighted)
+game/
+D3_Portable/
+
+# ReXGlue SDK - clone separately and apply patches/ (see README)
+rexglue-sdk/
+sdk-bin/
+
+# Build outputs
+port/out/
+port/generated/
+port/ttd/
+
+# Third-party tools
+tools/
+
+*.zip
+
+# Dev and debug files
+port/*.txt
+!port/CMakeLists.txt
+port/*.cdb
+port/shader_dump*/
+port/ghidra_scripts/
+port/templates/
+port/src/instrument.cpp
+port/src/pump_trace.cpp
+port/src/worker_trace.cpp
+port/src/set_trace.cpp
+port/press.ps1
+port/shot.ps1
+port/rtdump.ps1
+port/auto_nav.ps1
+port/debug.ps1
+port/memscan.ps1
+port/logsnap*/
+package_release.ps1
+release_test/
+
+# Runtime files
+port/input_inject.txt
+port/shot.req
+port/rtdump.req
+port/*.png
+port/*.log
+port/decomp_*.c
+port/*.c
+
+# Local-only files
+reference/
+.claude/
+CLAUDE.md
+HANDOFF_*.md
+video_script.md
+jugar_diablo3.bat
+jugar_diablo3_debug.bat
