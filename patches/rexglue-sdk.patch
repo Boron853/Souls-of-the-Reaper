@@ -1733,7 +1733,7 @@ index b8eae3c..e0168a8 100644
  
  void MnkInputDriver::OnGotFocus(rex::ui::UISetupEvent&) {
 diff --git a/src/kernel/xam/apps/xam_app.cpp b/src/kernel/xam/apps/xam_app.cpp
-index 7f10ece..bff07f7 100644
+index 7f10ece..8f47ef9 100644
 --- a/src/kernel/xam/apps/xam_app.cpp
 +++ b/src/kernel/xam/apps/xam_app.cpp
 @@ -1,4 +1,4 @@
@@ -1742,7 +1742,7 @@ index 7f10ece..bff07f7 100644
   ******************************************************************************
   * Xenia : Xbox 360 Emulator Research Project                                 *
   ******************************************************************************
-@@ -60,14 +60,22 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -60,14 +60,30 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
        uint32_t item_count = 0;
        auto result = e->WriteItems(data->buffer_ptr, buffer, &item_count);
  
@@ -1761,8 +1761,16 @@ index 7f10ece..bff07f7 100644
 +      // drain semantics and caused the multi-hero "loading hero" hang (cdb s13:
 +      // the world-load sub_823EE6E0 waits forever on the streaming event
 +      // [ctx+0x8040] because the save enumeration never terminates cleanly).
-+      // The profile-xuid fix (xam_content_aggregate.cpp) should keep the title
-+      // transition working without this hack now.
++      //
++      // [s22] Tested returning SUCCESS+count=0 for the empty aggregate
++      // enumerator (0-saves case): 0x2000E did switch 0x12 -> 0x00, but the
++      // title screen STILL stalled on the logo (repro log diablo3_103). So the
++      // logo->char-select gate is NOT this message's result code; it lives in
++      // the guest char-select state machine (content worker cb=0x82D8AF68 +
++      // syscall-500 enumerate + title-id membership check sub_82D8A7B0/A810).
++      // The only known unblock is the s8 "fake length=1" hack, which is
++      // unfaithful (shows a phantom hero) and regresses multi-hero. Left
++      // faithful; the 0-saves create-new flow remains open (see CLAUDE.md #2).
 +      if (data->length_ptr) {
 +        auto length_ptr = memory_->TranslateVirtual<be<uint32_t>*>(data->length_ptr);
 +        *length_ptr = item_count;
@@ -1773,7 +1781,7 @@ index 7f10ece..bff07f7 100644
      case 0x00020021: {
        struct message_data {
 diff --git a/src/kernel/xam/xam_content.cpp b/src/kernel/xam/xam_content.cpp
-index 1fb1e16..1969f91 100644
+index 1fb1e16..a9654dd 100644
 --- a/src/kernel/xam/xam_content.cpp
 +++ b/src/kernel/xam/xam_content.cpp
 @@ -137,6 +137,13 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
@@ -1790,7 +1798,41 @@ index 1fb1e16..1969f91 100644
    if (overlapped_ptr && disposition_ptr) {
      *disposition_ptr = 0;
    }
-@@ -226,6 +233,8 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+@@ -174,7 +181,32 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
+       case 3:  // OPEN_EXISTING
+                // Open only if exists.
+         if (!content_manager->ContentExists(xuid, content_data)) {
+-          result = X_ERROR_PATH_NOT_FOUND;
++          // [s22] Auto-provision the profile's OWN save container on first boot.
++          // A pristine profile has no save container yet; on console the storage
++          // system provisions one during profile/storage setup, so the game's
++          // boot-time OPEN_EXISTING on its save ('save0', kSavedGame) succeeds
++          // and it reaches the "0 heroes -> Hero Creation" flow. Without this the
++          // game gets PATH_NOT_FOUND and falls back to an aggregate save
++          // enumeration that stalls on the title logo forever (the "create new
++          // hero with 0 saves" bug). Empirically verified: when this container
++          // exists the game goes straight to Hero Creation. Scoped to kSavedGame
++          // so we never fabricate DLC/other content the game legitimately probes
++          // for with OPEN_EXISTING. CreateContent makes the package dir,
++          // WriteContentHeaderFile writes the standard content header the guest's
++          // enumerate reads back, and CloseContent unregisters it so the normal
++          // Open path below reopens it and reports disposition=Open as usual.
++          if (content_data.content_type == XContentType::kSavedGame &&
++              XSUCCEEDED(content_manager->CreateContent(root_name, xuid, content_data))) {
++            content_manager->WriteContentHeaderFile(xuid, content_data);
++            content_manager->CloseContent(root_name);
++            REXKRNL_INFO("[D3DIAG] auto-provisioned empty save container '{}' (fresh profile)",
++                         root_name);
++          }
++          if (!content_manager->ContentExists(xuid, content_data)) {
++            result = X_ERROR_PATH_NOT_FOUND;
++          } else {
++            disposition = kDispositionState::Open;
++          }
+         } else {
+           disposition = kDispositionState::Open;
+         }
+@@ -226,6 +258,8 @@ u32 xeXamContentCreate(u32 user_index, mapped_string root_name, mapped_void cont
  
      extended_error = X_HRESULT_FROM_WIN32(result);
      length = static_cast<uint32_t>(disposition);
@@ -2528,3 +2570,9 @@ index c6fdbcf..482df66 100644
          return !imgui_drawer_->GetIO().WantCaptureMouse;
        });
      }
+diff --git a/thirdparty/libmspack b/thirdparty/libmspack
+--- a/thirdparty/libmspack
++++ b/thirdparty/libmspack
+@@ -1 +1 @@
+-Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837
++Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837-dirty

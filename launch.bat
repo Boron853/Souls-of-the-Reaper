@@ -75,37 +75,38 @@ rem ---------------- FPS + RENDER PATH ----------------
 :rtp
 cls
 echo ==================================================
-echo    FPS Cap and Render Path
+echo    Render and FPS
 echo ==================================================
 echo.
-echo    ROV  (faithful path - stable, more conservative)
+echo    ROV:
 echo.
 echo       [1]   30 fps
-echo       [2]   60 fps   (recommended - stable)
+echo       [2]   60 fps
 echo       [3]  120 fps
 echo       [4]  144 fps
 echo.
-echo    RTV  (fast path - lighting and artifacts FIXED,
-echo          confirmed in gameplay)
+echo    RTV:
 echo.
-echo       [5]  120 fps   (needs a 120 Hz+ monitor)
-echo       [6]  144 fps   (needs a 144 Hz+ monitor)
-echo       [7]  240 fps   (needs a 240 Hz+ monitor)
+echo       [5]   60 fps
+echo       [6]  120 fps
+echo       [7]  144 fps
+echo       [8]  240 fps
 echo.
 echo       [B]   Back
 echo.
-choice /c 1234567B /n /m "Option: "
+choice /c 12345678B /n /m "Option: "
 set "OPT=%errorlevel%"
 
 set "DFIX=false"
-if "%OPT%"=="8" goto mode
+if "%OPT%"=="9" goto mode
 if "%OPT%"=="1" ( set "RTP=rov" & set "FPS=30"  & set "VS=true"  )
 if "%OPT%"=="2" ( set "RTP=rov" & set "FPS=60"  & set "VS=true"  )
 if "%OPT%"=="3" ( set "RTP=rov" & set "FPS=120" & set "VS=false" )
 if "%OPT%"=="4" ( set "RTP=rov" & set "FPS=144" & set "VS=false" )
-if "%OPT%"=="5" ( set "RTP=rtv" & set "FPS=120" & set "VS=false" )
-if "%OPT%"=="6" ( set "RTP=rtv" & set "FPS=144" & set "VS=false" )
-if "%OPT%"=="7" ( set "RTP=rtv" & set "FPS=240" & set "VS=false" )
+if "%OPT%"=="5" ( set "RTP=rtv" & set "FPS=60"  & set "VS=true"  )
+if "%OPT%"=="6" ( set "RTP=rtv" & set "FPS=120" & set "VS=false" )
+if "%OPT%"=="7" ( set "RTP=rtv" & set "FPS=144" & set "VS=false" )
+if "%OPT%"=="8" ( set "RTP=rtv" & set "FPS=240" & set "VS=false" )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%APPLY%" ^
   -Toml "%TOML%" -Fps %FPS% -Vsync %VS% -Rtp %RTP% ^

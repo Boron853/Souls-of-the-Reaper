@@ -208,6 +208,28 @@ Set-Content -LiteralPath $TOML -Value $tomlContent -Encoding utf8
 Set-Content -LiteralPath $DONE -Value (Get-Date -Format "yyyy-MM-dd HH:mm:ss") -Encoding utf8
 
 # ---------------------------------------------------------------------------
+# Install the bundled starter save (optional convenience so players can begin
+# with characters ready to go). The port can now also create new heroes from
+# scratch, so this is not required. Copy it into Documents\diablo3 only if the
+# user does not already have one there - never overwrite existing saves.
+# ---------------------------------------------------------------------------
+
+$saveMsg = ""
+$saveSrc = Join-Path $ROOT "Savegame (copy to Documents)\diablo3"   # contains B13EBABEBABEBABE
+if (Test-Path (Join-Path $saveSrc "B13EBABEBABEBABE")) {
+    $docsDiablo = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "diablo3"
+    $targetXuid = Join-Path $docsDiablo "B13EBABEBABEBABE"
+    if (Test-Path $targetXuid) {
+        $saveMsg = "Existing save found in Documents\diablo3 - kept as-is."
+    } else {
+        Write-Step "Installing starter save game..."
+        New-Item -ItemType Directory -Path $docsDiablo -Force | Out-Null
+        Copy-Item (Join-Path $saveSrc "B13EBABEBABEBABE") $docsDiablo -Recurse -Force
+        $saveMsg = "Starter save installed to Documents\diablo3."
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 
@@ -216,6 +238,7 @@ Write-Host "  Setup complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Game data: $GAMEOUT"
 Write-Host "  CPK files: $copied found"
+if ($saveMsg) { Write-Host "  $saveMsg" }
 Write-Host ""
 Write-Host "  The game will now launch. Next time just run launch.bat directly."
 Write-Host ""

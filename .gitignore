@@ -36,6 +36,7 @@ port/memscan.ps1
 port/logsnap*/
 package_release.ps1
 release_test/
+release/
 
 # Runtime files
 port/input_inject.txt
