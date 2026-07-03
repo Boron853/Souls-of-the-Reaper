@@ -46,6 +46,14 @@ port/*.log
 port/decomp_*.c
 port/*.c
 
+# RenderDoc / GPU debug captures and raw EDRAM dumps (dev-only)
+port/*.raw
+port/rdc/
+port/rdc_capture.ps1
+port/rdc_play.ps1
+*.7z
+FABLE_AQUI.md
+
 # Local-only files
 reference/
 .claude/

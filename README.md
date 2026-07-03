@@ -1,8 +1,8 @@
 # Souls of the Reaper
 
-Xbox 360 → PC port of Diablo III built on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — an AOT recompiler that translates the Xbox 360 PPC binary to native x64 C++, with a Xenia-based kernel HLE, D3D12 GPU (Xenos), XMA audio, and threading.
+Xbox 360 → PC port of Diablo III built on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — an AOT recompiler that translates the Xbox 360 PPC binary to native x64 C++, with a Xenia-based kernel HLE.
 
-**Status:** Playable at 60fps stable (RelWithDebInfo / -O2). ROV render path required.
+**Status:** Playable and stable (RelWithDebInfo / -O2). Two render paths: ROV (faithful, 60fps) and RTV (fast, up to 240fps with lighting and artifacts fixed).
 
 ---
 
@@ -99,34 +99,17 @@ In `port/generated/default/diablo3_recomp.108.cpp`, replace the bodies of `sub_8
 %USERPROFILE%\Documents\diablo3\<xuid>\394F07D4\00000001\d3save\
 ```
 
-### ROV render path
+### Render paths (ROV / RTV)
 
-`render_target_path_d3d12 = "rov"` is required. Diablo III uses EDRAM aliasing in its deferred lighting pass; ROV emulates this correctly. RTV renders the world black.
+Diablo III uses EDRAM aliasing in its deferred lighting pass, which historically broke the faster RTV path (world rendered black).
 
----
-
-## Project Layout
-
-```
-souls-of-the-reaper/
-├── launch.bat             # Game launcher (control mode + FPS selector)
-├── setup.ps1              # First-run setup: extracts game data from ISO
-├── apply_config.ps1       # TOML config merger used by launch.bat
-├── patches/
-│   ├── rexglue-sdk.patch  # SDK modifications (git diff)
-│   └── d3d_screenshot.cpp # New file added to the SDK
-└── port/
-    ├── src/               # Port-specific C++ (kernel overrides, FATX cache device)
-    ├── diablo3_manifest.toml
-    ├── diablo3_overrides.toml
-    ├── CMakeLists.txt
-    ├── CMakePresets.json
-    └── build.ps1
-```
+- **ROV** (`render_target_path_d3d12 = "rov"`) — the faithful path. Emulates the EDRAM aliasing correctly out of the box; stable 60fps.
+- **RTV** (`render_target_path_d3d12 = "rtv"`) — the fast path, up to 240fps. Now fully playable once two cvars are set (done automatically by `apply_config.ps1`):
+  - `rtv_color_depth_ownership_mode = 8` — cross-map "clear-like" ownership inheritance, restores the ground lighting that D3 seeds via an aliased D24S8 depth clear.
+  - `execute_unclipped_draw_vs_on_cpu = true` — runs the vertex shader of unclipped screen-space quads on the CPU to claim only the real EDRAM area, eliminating the lossy round-trips that caused the smoke distortion and the red/blue silhouette lines.
 
 ---
 
 ## Credits
 
 - [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) — recompiler + runtime (based on [Xenia](https://xenia.jp/))
-- Blizzard Entertainment — Diablo III
