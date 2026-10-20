@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <string>
 
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
@@ -28,6 +29,12 @@ class Diablo3App : public rex::ReXApp {
   // user data folder and the config TOML file, and changing it would break
   // existing installs.
   std::string OnGetWindowTitle() override { return "Diablo III: Reaper of Souls"; }
+
+  // ReXGlue 0.10 ships the GPU as a plugin; load the Xenos one built with the SDK.
+  void OnPreSetup(rex::RuntimeConfig& config) override { config.gpu_plugin = "xenos"; }
+
+  // Boot the disc's own executable by its exact name.
+  void OnLoadXexImage(std::string& xex_image) override { xex_image = "game:\\Default.xex"; }
 
   // FATX cache device setup.
   // Diablo mounts cache:\ as a FATX volume by reading \Device\Harddisk0\Partition0

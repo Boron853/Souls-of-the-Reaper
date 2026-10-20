@@ -83,3 +83,6 @@ HANDOFF_*.md
 video_script.md
 IDIOMAS_Y_REGIONES.md
 cosas por hacer.txt
+
+# Codegen manifest written by port/build.ps1 for your game folder
+port/local_manifest.toml

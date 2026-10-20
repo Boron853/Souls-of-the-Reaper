@@ -6,12 +6,13 @@ project(diablo3 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include(generated/rexglue.cmake)
+include(rexglue.cmake)
 
 # Sources
 set(DIABLO3_SOURCES
     src/main.cpp
     src/kernel_overrides.cpp
+    src/base_exit.cpp
 )
 
 if(WIN32)

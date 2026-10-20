@@ -1,8 +1,8 @@
 diff --git a/include/rex/graphics/d3d12/render_target_cache.h b/include/rex/graphics/d3d12/render_target_cache.h
-index b9d2688..c6a43ee 100644
+index cd7693a..02938b8 100644
 --- a/include/rex/graphics/d3d12/render_target_cache.h
 +++ b/include/rex/graphics/d3d12/render_target_cache.h
-@@ -666,7 +666,7 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
+@@ -652,7 +652,7 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
    // Writes contents of host render targets within rectangles from
    // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
    bool DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
@@ -12,10 +12,10 @@ index b9d2688..c6a43ee 100644
    bool use_stencil_reference_output_ = false;
  
 diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
-index e0679b8..3ba11d8 100644
+index 2cf24c4..4355081 100644
 --- a/include/rex/graphics/flags.h
 +++ b/include/rex/graphics/flags.h
-@@ -47,6 +47,7 @@ REXCVAR_DECLARE(bool, native_2x_msaa);
+@@ -43,6 +43,7 @@ REXCVAR_DECLARE(bool, native_2x_msaa);
  REXCVAR_DECLARE(bool, snorm16_render_target_full_range);
  REXCVAR_DECLARE(bool, mrt_edram_used_range_clamp_to_min);
  REXCVAR_DECLARE(bool, direct_host_resolve);
@@ -24,7 +24,7 @@ index e0679b8..3ba11d8 100644
  // GPU Textures
  REXCVAR_DECLARE(bool, gpu_allow_invalid_fetch_constants);
 diff --git a/include/rex/graphics/pipeline/render_target/cache.h b/include/rex/graphics/pipeline/render_target/cache.h
-index 18e6b14..b19716f 100644
+index 3bbd52e..6a6a963 100644
 --- a/include/rex/graphics/pipeline/render_target/cache.h
 +++ b/include/rex/graphics/pipeline/render_target/cache.h
 @@ -1,4 +1,4 @@
@@ -33,7 +33,7 @@ index 18e6b14..b19716f 100644
  /**
   ******************************************************************************
   * Xenia : Xbox 360 Emulator Research Project                                 *
-@@ -520,14 +520,49 @@ class RenderTargetCache {
+@@ -519,14 +519,49 @@ class RenderTargetCache {
    // render target texture rectangle - textures may have any pitch they need)
    // from ResolveInfo::GetCopyEdramTileSpan and render targets owning them to
    // rectangles_out.
@@ -84,7 +84,7 @@ index 18e6b14..b19716f 100644
    // Sets up the needed render targets and transfers to perform a clear in a
    // resolve operation via a host render target clear. resolve_info is expected
    // to be obtained via draw_util::GetResolveInfo. Returns whether any clears
-@@ -593,6 +628,27 @@ class RenderTargetCache {
+@@ -582,6 +617,27 @@ class RenderTargetCache {
      // empty too.
      RenderTargetKey host_depth_render_target_unorm24;
      RenderTargetKey host_depth_render_target_float24;
@@ -112,7 +112,7 @@ index 18e6b14..b19716f 100644
      OwnershipRange(uint32_t end_tiles, RenderTargetKey render_target,
                     RenderTargetKey host_depth_render_target_unorm24,
                     RenderTargetKey host_depth_render_target_float24)
-@@ -672,6 +728,38 @@ class RenderTargetCache {
+@@ -661,6 +717,38 @@ class RenderTargetCache {
    // changes to this throughout a frame are pretty rare.
    std::map<uint32_t, OwnershipRange> ownership_ranges_;
  
@@ -151,76 +151,6 @@ index 18e6b14..b19716f 100644
    // Render targets actually used by the draw call with the last successful
    // update. 0 is depth, color starting from 1, nullptr if not bound.
    // Only valid for non-pixel-shader-interlock paths.
-diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
-index 2483b99..f518aac 100644
---- a/include/rex/input/mnk/mnk_input_driver.h
-+++ b/include/rex/input/mnk/mnk_input_driver.h
-@@ -13,6 +13,7 @@
- #include <rex/input/input_driver.h>
- #include <rex/ui/window_listener.h>
- 
-+#include <atomic>
- #include <cstdint>
- #include <mutex>
- #include <queue>
-@@ -51,8 +52,13 @@ class MnkInputDriver final : public InputDriver,
-   void OnGotFocus(rex::ui::UISetupEvent& e) override;
- 
-  private:
--  uint32_t UserIndex() const;
-   bool IsEnabled() const;
-+  // [s39] The xam user_index this keyboard claimed via SlotArbiter on its first real
-+  // input, or -1 if it hasn't acted yet. Call under state_mutex_ (see TryClaimSlot).
-+  int32_t ClaimedSlot() const;
-+  // Claims the next free slot from the shared SlotArbiter, if not already claimed.
-+  // Must be called with state_mutex_ held.
-+  void TryClaimSlotLocked();
-   void CenterCursor();
-   void UpdateMouseCapture();
-   void SetKeyState(uint16_t vk, bool down);
-@@ -62,6 +68,8 @@ class MnkInputDriver final : public InputDriver,
- 
-   std::mutex state_mutex_;
-   bool key_down_[256] = {};
-+  // -1 = not yet claimed. Set once, under state_mutex_, in TryClaimSlotLocked.
-+  std::atomic<int32_t> claimed_slot_{-1};
- 
-   // Mouse delta tracking
-   int32_t mouse_dx_ = 0;
-@@ -69,6 +77,7 @@ class MnkInputDriver final : public InputDriver,
-   int32_t prev_mouse_x_ = 0;
-   int32_t prev_mouse_y_ = 0;
-   bool mouse_captured_ = false;
-+  bool cursor_hidden_ = false;
-   bool has_focus_ = true;
- 
-   // Keystroke queue
-diff --git a/include/rex/input/sdl/sdl_input_driver.h b/include/rex/input/sdl/sdl_input_driver.h
-index 92bec81..085e5bc 100644
---- a/include/rex/input/sdl/sdl_input_driver.h
-+++ b/include/rex/input/sdl/sdl_input_driver.h
-@@ -86,6 +86,11 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
-   bool TestSDLVersion() const;
-   void UpdateXCapabilities(ControllerState& state);
-   void QueueControllerUpdate();
-+  // [s37] Connected-but-not-yet-claimed physical controllers. A controller is opened
-+  // on GAMEPAD_ADDED but does NOT occupy a xam user_index slot until it actually
-+  // presses a button - see ClaimSlotForDeviceLocked for why.
-+  SDL_Gamepad* TakePendingControllerLocked(SDL_JoystickID instance_id);
-+  std::optional<size_t> ClaimSlotForDeviceLocked(SDL_Gamepad* controller);
- 
-   rex::ui::Window* attached_window_ = nullptr;
-   bool sdl_events_initialized_;
-@@ -93,6 +98,9 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
-   std::atomic<int> sdl_events_unflushed_;
-   std::atomic<bool> sdl_pumpevents_queued_;
-   std::array<ControllerState, HID_SDL_USER_COUNT> controllers_;
-+  // [s37] Physical controllers that are connected but haven't pressed a button yet,
-+  // so they haven't claimed a xam user_index slot.
-+  std::vector<SDL_Gamepad*> unbound_controllers_;
-   std::mutex controllers_mutex_;
-   std::mutex event_queue_mutex_;
-   std::vector<SDL_Event> pending_events_;
 diff --git a/include/rex/kernel/xam/private.h b/include/rex/kernel/xam/private.h
 index 3df4776..4696ebd 100644
 --- a/include/rex/kernel/xam/private.h
@@ -250,7 +180,7 @@ index 3df4776..4696ebd 100644
  
  // Registration functions, one per file.
 diff --git a/include/rex/rex_app.h b/include/rex/rex_app.h
-index 44fc9e6..7b345be 100644
+index 1f52480..8258832 100644
 --- a/include/rex/rex_app.h
 +++ b/include/rex/rex_app.h
 @@ -17,6 +17,7 @@
@@ -267,7 +197,7 @@ index 44fc9e6..7b345be 100644
  #include <rex/ui/windowed_app.h>
 +#include <rex/version.h>
  
- struct ImFontAtlas;
+ namespace rex {
  
 @@ -114,6 +116,14 @@ class ReXApp : public ui::WindowedApp, public ui::WindowListener, public ui::Win
    /// Override to adjust game/user/update data paths programmatically.
@@ -307,10 +237,10 @@ index 0a43f07..76af589 100644
    static void StashHandle(X_DISPATCH_HEADER* header, uint32_t handle) {
      header->wait_list_flink = kXObjSignature;
 diff --git a/include/rex/system/xthread.h b/include/rex/system/xthread.h
-index c5f3de7..379d3de 100644
+index a72911e..fc31484 100644
 --- a/include/rex/system/xthread.h
 +++ b/include/rex/system/xthread.h
-@@ -339,6 +339,12 @@ class XThread : public XObject {
+@@ -341,6 +341,12 @@ class XThread : public XObject {
    X_STATUS Exit(int exit_code);
    X_STATUS Terminate(int exit_code);
  
@@ -323,7 +253,7 @@ index c5f3de7..379d3de 100644
    virtual void Execute();
  
    rex::thread::Fiber* main_fiber() const { return main_fiber_; }
-@@ -416,6 +422,9 @@ class XThread : public XObject {
+@@ -418,6 +424,9 @@ class XThread : public XObject {
    uint32_t stack_limit_ = 0;       // Low address
    bool guest_thread_ = false;
    bool main_thread_ = false;  // Entry-point thread
@@ -333,28 +263,11 @@ index c5f3de7..379d3de 100644
    // Atomic: written by the thread itself in Exit/Terminate, read cross-thread by
    // KernelState::TerminateTitle's cooperative drain.
    std::atomic<bool> running_{false};
-diff --git a/include/rex/ui/imgui_drawer.h b/include/rex/ui/imgui_drawer.h
-index c72b628..93562b4 100644
---- a/include/rex/ui/imgui_drawer.h
-+++ b/include/rex/ui/imgui_drawer.h
-@@ -47,6 +47,12 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
-   void AddDialog(ImGuiDialog* dialog);
-   void RemoveDialog(ImGuiDialog* dialog);
- 
-+  // True while at least one dialog is attached. ImGui only updates its io (and
-+  // the WantCapture* flags) while drawing dialogs; once the last one is removed
-+  // the drawer detaches and those flags freeze at their last value, so callers
-+  // must gate any use of them on this being true.
-+  bool has_dialogs() const { return !dialogs_.empty(); }
-+
-   // SetPresenter may be called from the destructor.
-   void SetPresenter(Presenter* new_presenter);
-   void SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer);
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index 75764de..61d4ac5 100644
+index 1ddafd0..82fbcd9 100644
 --- a/src/core/CMakeLists.txt
 +++ b/src/core/CMakeLists.txt
-@@ -81,6 +81,12 @@ if(UNIX)
+@@ -104,6 +104,12 @@ elseif(UNIX)
      target_link_libraries(rexcore PRIVATE pthread rt dl)
  endif()
  
@@ -400,10 +313,10 @@ index 896dfec..13fa6a6 100644
    HANDLE process_handle = GetCurrentProcess();
    DWORD_PTR process_affinity_mask;
 diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
-index 8e898b6..8ee4742 100644
+index 0d8f8af..41a5fda 100644
 --- a/src/graphics/CMakeLists.txt
 +++ b/src/graphics/CMakeLists.txt
-@@ -86,6 +86,7 @@ if(REXGLUE_USE_D3D12)
+@@ -82,6 +82,7 @@ if(REXGLUE_USE_D3D12)
          d3d12/texture_cache.cpp
          d3d12/deferred_command_list.cpp
          d3d12/pipeline_cache.cpp
@@ -412,7 +325,7 @@ index 8e898b6..8ee4742 100644
  endif()
  
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
-index 60efcd3..f83be2c 100644
+index a744375..e69de90 100644
 --- a/src/graphics/command_processor.cpp
 +++ b/src/graphics/command_processor.cpp
 @@ -1,4 +1,4 @@
@@ -454,7 +367,7 @@ index 60efcd3..f83be2c 100644
  REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
                      "Refresh page-valid state from GPU-written memory at frame end. "
                      "Disable for minor CPU overhead reduction, but may break memory coherency.")
-@@ -1098,6 +1110,105 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+@@ -960,6 +972,105 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
  
    IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
  
@@ -561,7 +474,7 @@ index 60efcd3..f83be2c 100644
    return true;
  }
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index efed1b7..980e025 100644
+index 19874a5..5d3614f 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -11,6 +11,7 @@
@@ -591,7 +504,7 @@ index efed1b7..980e025 100644
  // Generated with `xb buildshaders`.
  namespace shaders {
  #include "../shaders/bytecode/d3d12_5_1/apply_gamma_pwl_cs.h"
-@@ -2278,6 +2291,136 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -2254,6 +2267,136 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
    // End the frame even if did not present for any reason (the image refresher
    // was not called), to prevent leaking per-frame resources.
    EndSubmission(true);
@@ -728,7 +641,7 @@ index efed1b7..980e025 100644
  }
  
  void D3D12CommandProcessor::OnPrimaryBufferEnd() {
-@@ -2308,6 +2451,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2284,6 +2427,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      return IssueCopy();
    }
  
@@ -737,7 +650,7 @@ index efed1b7..980e025 100644
    bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
  
    // Vertex shader analysis.
-@@ -2501,6 +2646,26 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2477,6 +2622,26 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
  
    // Ensure vertex buffers are resident.
    const Shader::ConstantRegisterMap& constant_map_vertex = vertex_shader->constant_register_map();
@@ -796,7 +709,7 @@ index 8e6b854..c7b1fc5 100644
          description_out.depth_func = xenos::CompareFunction::kAlways;
        }
 diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
-index 8e269c4..0cf0cfd 100644
+index dd321a5..7a40291 100644
 --- a/src/graphics/d3d12/render_target_cache.cpp
 +++ b/src/graphics/d3d12/render_target_cache.cpp
 @@ -1,4 +1,4 @@
@@ -805,7 +718,7 @@ index 8e269c4..0cf0cfd 100644
   ******************************************************************************
   * Xenia : Xbox 360 Emulator Research Project                                 *
   ******************************************************************************
-@@ -48,8 +48,20 @@ REXCVAR_DEFINE_STRING(render_target_path_d3d12, "", "GPU/D3D12",
+@@ -47,8 +47,20 @@ REXCVAR_DEFINE_STRING(render_target_path_d3d12, "", "GPU/D3D12",
  
  REXCVAR_DEFINE_BOOL(native_stencil_value_output, true, "GPU", "Enable native stencil value output");
  
@@ -826,7 +739,7 @@ index 8e269c4..0cf0cfd 100644
  // Generated with `xb buildshaders`.
  namespace shaders {
  #include "../shaders/bytecode/d3d12_5_1/clear_uint2_ps.h"
-@@ -871,9 +883,13 @@ bool D3D12RenderTargetCache::Initialize() {
+@@ -870,9 +882,13 @@ bool D3D12RenderTargetCache::Initialize() {
      // Blending is done in linear space directly in shaders.
      gamma_render_target_as_unorm16_ = false;
  
@@ -843,7 +756,7 @@ index 8e269c4..0cf0cfd 100644
  
      // Only ForcedSampleCount, which doesn't support 2x.
      msaa_2x_supported_ = false;
-@@ -1187,6 +1203,31 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+@@ -1180,6 +1196,31 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
      return true;
    }
  
@@ -875,7 +788,7 @@ index 8e269c4..0cf0cfd 100644
    DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
  
    // Copying.
-@@ -1203,7 +1244,18 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+@@ -1196,7 +1237,18 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
            draw_util::resolve_copy_shader_info[size_t(copy_shader)];
        bool direct_resolved = false;
        if (GetPath() == Path::kHostRenderTargets) {
@@ -895,7 +808,7 @@ index 8e269c4..0cf0cfd 100644
            direct_resolved =
                TryResolveCopyDirectly(resolve_info, copy_shader, draw_resolution_scaled);
            if (direct_resolved) {
-@@ -1214,13 +1266,14 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+@@ -1207,13 +1259,14 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
          }
          if (!direct_resolved) {
            // Dump the current contents of the render targets owning the affected
@@ -912,7 +825,7 @@ index 8e269c4..0cf0cfd 100644
              REXGPU_ERROR("D3D12RenderTargetCache: Failed to dump host render targets for resolve");
              return false;
            }
-@@ -5739,15 +5792,49 @@ bool D3D12RenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo
+@@ -5581,15 +5634,49 @@ bool D3D12RenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo
  }
  
  bool D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
@@ -965,7 +878,7 @@ index 8e269c4..0cf0cfd 100644
    for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
      auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
 diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
-index 382b0b2..2c515a9 100644
+index 953c5fd..a447153 100644
 --- a/src/graphics/pipeline/render_target/cache.cpp
 +++ b/src/graphics/pipeline/render_target/cache.cpp
 @@ -1,4 +1,4 @@
@@ -1214,7 +1127,7 @@ index 382b0b2..2c515a9 100644
      ChangeOwnership(depth_render_target_key, depth_clear_start_tiles_base_relative,
                      depth_clear_length_tiles, &depth_transfers_out, &clear_rectangle);
    }
-@@ -1275,6 +1430,112 @@ bool RenderTargetCache::WouldOwnershipChangeRequireTransfers(RenderTargetKey des
+@@ -1237,6 +1392,112 @@ bool RenderTargetCache::WouldOwnershipChangeRequireTransfers(RenderTargetKey des
    return false;
  }
  
@@ -1327,7 +1240,7 @@ index 382b0b2..2c515a9 100644
  void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_tiles_base_relative,
                                          uint32_t length_tiles,
                                          std::vector<Transfer>* transfers_append_out,
-@@ -1286,8 +1547,135 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+@@ -1248,8 +1509,135 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
    if (length_tiles == 0) {
      return;
    }
@@ -1463,7 +1376,7 @@ index 382b0b2..2c515a9 100644
    bool host_depth_encoding_different = dest.is_depth && GetPath() == Path::kHostRenderTargets &&
                                         IsHostDepthEncodingDifferent(dest.GetDepthFormat());
    auto change_ownership_in_extent = [&](uint32_t extent_start, uint32_t extent_end) {
-@@ -1317,9 +1705,75 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+@@ -1279,9 +1667,75 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
        if (it->second.IsOwnedBy(dest, host_depth_encoding_different)) {
          // Already owned by the needed render target - no need to transfer
          // anything.
@@ -1539,7 +1452,7 @@ index 382b0b2..2c515a9 100644
        // Take over the current range. Handle the tail - may be outside the range
        // (split in this case) or within it.
        if (it->second.end_tiles > extent_end) {
-@@ -1327,7 +1781,7 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+@@ -1289,7 +1743,7 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
          ownership_ranges_.emplace(extent_end, it->second);
          it->second.end_tiles = extent_end;
        }
@@ -1548,7 +1461,7 @@ index 382b0b2..2c515a9 100644
          RenderTargetKey transfer_source = it->second.render_target;
          // Only perform the copying when actually changing the latest owner, not
          // just the latest host depth owner - the transfer source is expected to
-@@ -1346,6 +1800,20 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+@@ -1308,6 +1762,20 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
                // Same render target, don't provide a separate host depth source.
                transfer_host_depth_source = RenderTargetKey();
              }
@@ -1569,7 +1482,7 @@ index 382b0b2..2c515a9 100644
              if (!transfers_append_out->empty() &&
                  transfers_append_out->back().end_tiles == it->first &&
                  transfers_append_out->back().source->key() == transfer_source &&
-@@ -1379,9 +1847,29 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+@@ -1341,9 +1809,29 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
              }
            }
          }
@@ -1599,7 +1512,7 @@ index 382b0b2..2c515a9 100644
        if (host_depth_encoding_different) {
          it->second.GetHostDepthRenderTarget(dest.GetDepthFormat()) = dest;
        }
-@@ -1389,9 +1877,15 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+@@ -1351,9 +1839,15 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
        std::map<uint32_t, OwnershipRange>::iterator it_next;
        if (it != ownership_ranges_.end()) {
          it_next = std::next(it);
@@ -1616,7 +1529,7 @@ index 382b0b2..2c515a9 100644
            auto it_after = std::next(it_next);
            ownership_ranges_.erase(it_next);
            it_next = it_after;
-@@ -1403,8 +1897,12 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
+@@ -1365,8 +1859,12 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
        // with the next (thus obtaining the correct end pointer).
        if (it != ownership_ranges_.begin()) {
          auto it_prev = std::prev(it);
@@ -1631,7 +1544,7 @@ index 382b0b2..2c515a9 100644
          }
        }
 diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
-index c7c824e..05994c2 100644
+index 76f5600..2e0bc4f 100644
 --- a/src/graphics/pipeline/texture/cache.cpp
 +++ b/src/graphics/pipeline/texture/cache.cpp
 @@ -31,6 +31,13 @@ REXCVAR_DEFINE_INT32(texture_cache_memory_limit_render_to_texture, 24, "GPU",
@@ -1648,7 +1561,7 @@ index c7c824e..05994c2 100644
  REXCVAR_DEFINE_INT32(texture_cache_memory_limit_soft, 384, "GPU",
                       "Soft texture cache memory limit (MB)")
      .range(64, 4096)
-@@ -449,6 +456,32 @@ bool TextureCache::CommitPreparedTextureLoad(const PendingTextureLoad& pending_l
+@@ -453,6 +460,32 @@ bool TextureCache::CommitPreparedTextureLoad(const PendingTextureLoad& pending_l
  void TextureCache::RequestTextures(uint32_t used_texture_mask) {
    const auto& regs = register_file();
  
@@ -1681,481 +1594,6 @@ index c7c824e..05994c2 100644
    if (texture_became_outdated_.exchange(false, std::memory_order_acquire)) {
      // A texture has become outdated - make sure whether textures are outdated
      // is rechecked in this draw and in subsequent ones to reload the new data
-diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index b8eae3c..beb52ed 100644
---- a/src/input/mnk/mnk_input_driver.cpp
-+++ b/src/input/mnk/mnk_input_driver.cpp
-@@ -12,12 +12,14 @@
- 
- #include <rex/cvar.h>
- #include <rex/input/input.h>
-+#include <rex/input/slot_arbiter.h>
- #include <rex/logging.h>
- #include <rex/ui/keybinds.h>
- #include <rex/ui/virtual_key.h>
- #include <rex/ui/window.h>
- 
- #include <algorithm>
-+#include <atomic>
- #include <cmath>
- #include <cstring>
- 
-@@ -27,30 +29,48 @@
- #endif
- 
- REXCVAR_DEFINE_BOOL(mnk_mode, false, "Input", "Enable keyboard/mouse controller emulation");
--REXCVAR_DEFINE_INT32(mnk_user_index, 0, "Input", "Controller slot (0-3) for MnK").range(0, 3);
- REXCVAR_DEFINE_DOUBLE(mnk_sensitivity, 1.0, "Input", "Mouse sensitivity for right stick")
-     .range(0.01, 10.0);
- 
--REXCVAR_DEFINE_STRING(keybind_a, "Space", "Input/Keybinds/Controller", "A button");
-+// Control-mode split (driven by the launcher / settings overlay):
-+//   mnk_mode + !mnk_mouse                 -> keyboard only (mouse does nothing)
-+//   mnk_mode + mnk_mouse                  -> keyboard + mouse (mouse = camera/clicks)
-+// mnk_cursor_visible chooses whether the OS cursor stays on screen during play.
-+REXCVAR_DEFINE_BOOL(mnk_mouse, false, "Input",
-+                    "MnK: mouse acts as right stick (camera) + mouse buttons "
-+                    "(off = keyboard only, mouse ignored)");
-+REXCVAR_DEFINE_BOOL(mnk_cursor_visible, true, "Input",
-+                    "MnK: keep the OS cursor visible (false = hide it while playing)");
-+
-+// Default keyboard-only layout (used when mnk_mode is on). WASD moves; the arrow
-+// keys are the D-pad (the right "cruceta": opens the in-game map / quick menus).
-+// Action buttons sit on the right-hand cluster. Inventory/map use the popular
-+// keys (Tab/I, M). Triggers and the right-stick press also list a mouse button
-+// so the SAME defaults work in keyboard+mouse mode (any listed input fires it).
-+// Everything is remappable in-game via the F4 settings overlay.
-+REXCVAR_DEFINE_STRING(keybind_a, "Space, Return", "Input/Keybinds/Controller", "A button");
- REXCVAR_DEFINE_STRING(keybind_b, "Shift", "Input/Keybinds/Controller", "B button");
--REXCVAR_DEFINE_STRING(keybind_x, "R", "Input/Keybinds/Controller", "X button");
--REXCVAR_DEFINE_STRING(keybind_y, "E", "Input/Keybinds/Controller", "Y button");
--REXCVAR_DEFINE_STRING(keybind_left_trigger, "RMB", "Input/Keybinds/Controller", "Left trigger");
--REXCVAR_DEFINE_STRING(keybind_right_trigger, "LMB", "Input/Keybinds/Controller", "Right trigger");
--REXCVAR_DEFINE_STRING(keybind_left_shoulder, "Q", "Input/Keybinds/Controller", "Left shoulder");
--REXCVAR_DEFINE_STRING(keybind_right_shoulder, "F", "Input/Keybinds/Controller", "Right shoulder");
-+REXCVAR_DEFINE_STRING(keybind_x, "J", "Input/Keybinds/Controller", "X button");
-+REXCVAR_DEFINE_STRING(keybind_y, "U", "Input/Keybinds/Controller", "Y button");
-+REXCVAR_DEFINE_STRING(keybind_left_trigger, "H, RMB", "Input/Keybinds/Controller", "Left trigger");
-+REXCVAR_DEFINE_STRING(keybind_right_trigger, "L, LMB", "Input/Keybinds/Controller",
-+                      "Right trigger");
-+REXCVAR_DEFINE_STRING(keybind_left_shoulder, "O", "Input/Keybinds/Controller", "Left shoulder");
-+REXCVAR_DEFINE_STRING(keybind_right_shoulder, "K", "Input/Keybinds/Controller", "Right shoulder");
- REXCVAR_DEFINE_STRING(keybind_lstick_up, "W", "Input/Keybinds/Controller", "Left stick up");
- REXCVAR_DEFINE_STRING(keybind_lstick_down, "S", "Input/Keybinds/Controller", "Left stick down");
- REXCVAR_DEFINE_STRING(keybind_lstick_left, "A", "Input/Keybinds/Controller", "Left stick left");
- REXCVAR_DEFINE_STRING(keybind_lstick_right, "D", "Input/Keybinds/Controller", "Left stick right");
- REXCVAR_DEFINE_STRING(keybind_lstick_press, "C", "Input/Keybinds/Controller", "Left stick press");
--REXCVAR_DEFINE_STRING(keybind_rstick_press, "MMB", "Input/Keybinds/Controller",
-+REXCVAR_DEFINE_STRING(keybind_rstick_press, "V, MMB", "Input/Keybinds/Controller",
-                       "Right stick press");
--REXCVAR_DEFINE_STRING(keybind_dpad_up, "Up", "Input/Keybinds/Controller", "D-pad up");
-+// D-pad = arrow keys (the cruceta). "M" is aliased onto one direction as a
-+// tentative map shortcut; swap it in F4 if the console opens the map elsewhere.
-+REXCVAR_DEFINE_STRING(keybind_dpad_up, "Up, M", "Input/Keybinds/Controller", "D-pad up");
- REXCVAR_DEFINE_STRING(keybind_dpad_down, "Down", "Input/Keybinds/Controller", "D-pad down");
- REXCVAR_DEFINE_STRING(keybind_dpad_left, "Left", "Input/Keybinds/Controller", "D-pad left");
- REXCVAR_DEFINE_STRING(keybind_dpad_right, "Right", "Input/Keybinds/Controller", "D-pad right");
--REXCVAR_DEFINE_STRING(keybind_back, "Tab", "Input/Keybinds/Controller", "Back button");
-+REXCVAR_DEFINE_STRING(keybind_back, "Tab, I", "Input/Keybinds/Controller", "Back button");
- REXCVAR_DEFINE_STRING(keybind_start, "Escape", "Input/Keybinds/Controller", "Start button");
- REXCVAR_DEFINE_STRING(keybind_guide, "", "Input/Keybinds/Controller", "Guide button");
- 
-@@ -96,25 +116,63 @@ void MnkInputDriver::OnClosing(rex::ui::UIEvent&) {
-   }
- }
- 
--uint32_t MnkInputDriver::UserIndex() const {
--  return static_cast<uint32_t>(REXCVAR_GET(mnk_user_index));
--}
--
- bool MnkInputDriver::IsEnabled() const {
-   return REXCVAR_GET(mnk_mode);
- }
- 
-+int32_t MnkInputDriver::ClaimedSlot() const {
-+  return claimed_slot_.load(std::memory_order_acquire);
-+}
-+
-+void MnkInputDriver::TryClaimSlotLocked() {
-+  // [s39] No fixed reservation anymore: the keyboard claims whichever slot the
-+  // shared SlotArbiter hands it, same as a real controller claiming on its first
-+  // button (see ClaimSlotForDeviceLocked in sdl_input_driver.cpp). Whoever acts
-+  // first at the title screen becomes P1, regardless of keyboard vs. controller.
-+  if (claimed_slot_.load(std::memory_order_relaxed) >= 0) {
-+    return;
-+  }
-+  auto slot = rex::input::SlotArbiter::ClaimNextSlot();
-+  if (slot) {
-+    claimed_slot_.store(static_cast<int32_t>(*slot), std::memory_order_release);
-+    REXLOG_INFO("MnK: keyboard claimed user_index {} on first input.", *slot);
-+  } else {
-+    REXLOG_WARN("MnK: keyboard produced input but no free slot remains (all 4 taken).");
-+  }
-+}
-+
- static bool IsBindPressed(const bool (&key_down)[256], const std::string& cvar_val) {
--  VirtualKey vk = rex::ui::ParseVirtualKey(cvar_val);
--  if (vk == VirtualKey::kNone)
--    return false;
--  uint16_t idx = static_cast<uint16_t>(vk);
--  return idx < 256 && key_down[idx];
-+  // A bind may list several keys separated by ',' with OR semantics, so one
-+  // default can serve both keyboard-only and keyboard+mouse modes. E.g.
-+  // "H, RMB" fires when either the H key or the right mouse button is held.
-+  size_t pos = 0;
-+  while (pos < cvar_val.size()) {
-+    size_t comma = cvar_val.find(',', pos);
-+    size_t len = (comma == std::string::npos) ? cvar_val.size() - pos : comma - pos;
-+    std::string tok = cvar_val.substr(pos, len);
-+    // Trim surrounding whitespace.
-+    size_t a = tok.find_first_not_of(" \t");
-+    if (a != std::string::npos) {
-+      size_t b = tok.find_last_not_of(" \t");
-+      tok = tok.substr(a, b - a + 1);
-+      VirtualKey vk = rex::ui::ParseVirtualKey(tok);
-+      if (vk != VirtualKey::kNone) {
-+        uint16_t idx = static_cast<uint16_t>(vk);
-+        if (idx < 256 && key_down[idx])
-+          return true;
-+      }
-+    }
-+    if (comma == std::string::npos)
-+      break;
-+    pos = comma + 1;
-+  }
-+  return false;
- }
- 
- X_RESULT MnkInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
-                                          X_INPUT_CAPABILITIES* out_caps) {
--  if (!IsEnabled() || user_index != UserIndex()) {
-+  int32_t claimed = ClaimedSlot();
-+  if (!IsEnabled() || claimed < 0 || user_index != static_cast<uint32_t>(claimed)) {
-     return X_ERROR_DEVICE_NOT_CONNECTED;
-   }
-   if (out_caps) {
-@@ -136,11 +194,19 @@ X_RESULT MnkInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
- }
- 
- X_RESULT MnkInputDriver::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
--  if (!IsEnabled() || user_index != UserIndex()) {
--    return X_ERROR_DEVICE_NOT_CONNECTED;
-+  // Cursor/mouse-capture state is a single global OS cursor, not per claimed
-+  // slot. Update it on every poll while MnK is enabled so it hides even
-+  // before the keyboard has claimed a player slot (e.g. controller-only
-+  // play never has the keyboard claim anything, so this must not depend on
-+  // ClaimedSlot()).
-+  if (IsEnabled()) {
-+    UpdateMouseCapture();
-   }
- 
--  UpdateMouseCapture();
-+  int32_t claimed = ClaimedSlot();
-+  if (!IsEnabled() || claimed < 0 || user_index != static_cast<uint32_t>(claimed)) {
-+    return X_ERROR_DEVICE_NOT_CONNECTED;
-+  }
- 
-   if (!is_active() || !has_focus_) {
-     if (out_state) {
-@@ -225,7 +291,8 @@ X_RESULT MnkInputDriver::GetState(uint32_t user_index, X_INPUT_STATE* out_state)
- }
- 
- X_RESULT MnkInputDriver::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) {
--  if (!IsEnabled() || user_index != UserIndex()) {
-+  int32_t claimed = ClaimedSlot();
-+  if (!IsEnabled() || claimed < 0 || user_index != static_cast<uint32_t>(claimed)) {
-     return X_ERROR_DEVICE_NOT_CONNECTED;
-   }
-   return X_ERROR_SUCCESS;
-@@ -233,7 +300,8 @@ X_RESULT MnkInputDriver::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibrat
- 
- X_RESULT MnkInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
-                                       X_INPUT_KEYSTROKE* out_keystroke) {
--  if (!IsEnabled() || user_index != UserIndex()) {
-+  int32_t claimed = ClaimedSlot();
-+  if (!IsEnabled() || claimed < 0 || user_index != static_cast<uint32_t>(claimed)) {
-     return X_ERROR_DEVICE_NOT_CONNECTED;
-   }
-   std::lock_guard lock(state_mutex_);
-@@ -252,7 +320,7 @@ void MnkInputDriver::EnqueueKeystroke(uint16_t vk_pad, bool down) {
-   ks.virtual_key = vk_pad;
-   ks.unicode = 0;
-   ks.flags = down ? X_INPUT_KEYSTROKE_KEYDOWN : X_INPUT_KEYSTROKE_KEYUP;
--  ks.user_index = static_cast<uint8_t>(UserIndex());
-+  ks.user_index = static_cast<uint8_t>(std::max<int32_t>(ClaimedSlot(), 0));
-   ks.hid_code = 0;
-   keystroke_queue_.push(ks);
- }
-@@ -278,21 +346,37 @@ void MnkInputDriver::UpdateMouseCapture() {
-   if (!attached_window_)
-     return;
- 
--  bool should_capture = IsEnabled() && has_focus_ && is_active();
-+  bool active = IsEnabled() && has_focus_ && is_active();
-+  bool mouse_cam = active && REXCVAR_GET(mnk_mouse);
-+  bool cursor_visible = REXCVAR_GET(mnk_cursor_visible);
- 
--  if (should_capture && !mouse_captured_) {
-+  // Lock + recenter the cursor for smooth mouselook ONLY when the mouse drives
-+  // the camera and the cursor is meant to be hidden. With a visible cursor we
-+  // still read raw deltas (camera works) but let the pointer roam freely so it
-+  // can be used on screen. With the mouse disabled (keyboard-only) we never lock.
-+  bool want_lock = mouse_cam && !cursor_visible;
-+  // Hide the OS cursor whenever MnK is active and the user wants it hidden
-+  // (e.g. keyboard-only mode hides the idle pointer during gameplay).
-+  bool want_hidden = active && !cursor_visible;
-+
-+  if (want_lock && !mouse_captured_) {
-     mouse_captured_ = true;
--    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
-     attached_window_->CaptureMouse();
-     // Reset deltas to avoid a spike on capture start
-     mouse_dx_ = 0;
-     mouse_dy_ = 0;
--  } else if (!should_capture && mouse_captured_) {
-+  } else if (!want_lock && mouse_captured_) {
-     mouse_captured_ = false;
--    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
-     attached_window_->ReleaseMouse();
-   }
- 
-+  if (want_hidden != cursor_hidden_) {
-+    cursor_hidden_ = want_hidden;
-+    attached_window_->SetCursorVisibility(want_hidden
-+                                              ? rex::ui::Window::CursorVisibility::kHidden
-+                                              : rex::ui::Window::CursorVisibility::kVisible);
-+  }
-+
-   // Re-center cursor each frame while captured to prevent edge clamping
-   if (mouse_captured_) {
-     CenterCursor();
-@@ -309,6 +393,9 @@ void MnkInputDriver::OnKeyDown(rex::ui::KeyEvent& e) {
-   if (!IsEnabled() || !has_focus_)
-     return;
-   std::lock_guard lock(state_mutex_);
-+  // [s39] Any key claims a slot from the shared arbiter on first press, mirroring
-+  // how a real controller claims its slot on its first button.
-+  TryClaimSlotLocked();
-   uint16_t vk = static_cast<uint16_t>(e.virtual_key());
-   SetKeyState(vk, true);
- }
-@@ -322,9 +409,12 @@ void MnkInputDriver::OnKeyUp(rex::ui::KeyEvent& e) {
- }
- 
- void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
--  if (!IsEnabled() || !has_focus_)
-+  if (!IsEnabled() || !has_focus_ || !REXCVAR_GET(mnk_mouse))
-     return;
-   std::lock_guard lock(state_mutex_);
-+  // [s39] Mouse clicks count as a claim too when mnk_mouse is on (keyboard+mouse
-+  // control mode) - see OnKeyDown for why.
-+  TryClaimSlotLocked();
-   switch (e.button()) {
-     case rex::ui::MouseEvent::Button::kLeft:
-       SetKeyState(static_cast<uint16_t>(VirtualKey::kLButton), true);
-@@ -360,7 +450,7 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
- }
- 
- void MnkInputDriver::OnMouseMove(rex::ui::MouseEvent& e) {
--  if (!IsEnabled() || !has_focus_)
-+  if (!IsEnabled() || !has_focus_ || !REXCVAR_GET(mnk_mouse))
-     return;
-   std::lock_guard lock(state_mutex_);
-   int32_t x = e.x();
-@@ -379,9 +469,12 @@ void MnkInputDriver::OnLostFocus(rex::ui::UISetupEvent&) {
-   mouse_dy_ = 0;
-   if (mouse_captured_ && attached_window_) {
-     mouse_captured_ = false;
--    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
-     attached_window_->ReleaseMouse();
-   }
-+  if (cursor_hidden_ && attached_window_) {
-+    cursor_hidden_ = false;
-+    attached_window_->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
-+  }
- }
- 
- void MnkInputDriver::OnGotFocus(rex::ui::UISetupEvent&) {
-diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
-index bdef585..29a0b06 100644
---- a/src/input/sdl/sdl_input_driver.cpp
-+++ b/src/input/sdl/sdl_input_driver.cpp
-@@ -16,6 +16,7 @@
- #include <rex/chrono/clock.h>
- #include <rex/cvar.h>
- #include <rex/input/flags.h>
-+#include <rex/input/slot_arbiter.h>
- #include <rex/input/sdl/sdl_input_driver.h>
- #include <rex/logging.h>
- #include <rex/ui/virtual_key.h>
-@@ -124,6 +125,10 @@ void SDLInputDriver::OnClosing(rex::ui::UIEvent&) {
-         controllers_.at(i) = {};
-       }
-     }
-+    for (SDL_Gamepad* pending : unbound_controllers_) {
-+      SDL_CloseGamepad(pending);
-+    }
-+    unbound_controllers_.clear();
-     if (SDL_Gamepad_initialized_) {
-       SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
-       SDL_Gamepad_initialized_ = false;
-@@ -450,49 +455,83 @@ void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
-       static_cast<int>(SDL_GetJoystickType(SDL_GetGamepadJoystick(controller))),
-       static_cast<int>(SDL_GetGamepadType(controller)), SDL_GetGamepadVendor(controller),
-       SDL_GetGamepadProduct(controller));
--  int user_id = -1;
--  // Check if the controller has a player index LED.
--  user_id = SDL_GetGamepadPlayerIndex(controller);
--  // Is that id already taken?
--  if (user_id < 0 || user_id >= static_cast<int>(controllers_.size()) ||
--      controllers_.at(user_id).sdl) {
--    user_id = -1;
--  }
--  // No player index or already taken, just take the first free slot.
--  if (user_id < 0) {
--    for (size_t i = 0; i < controllers_.size(); i++) {
--      if (!controllers_.at(i).sdl) {
--        user_id = static_cast<int>(i);
--#if SDL_VERSION_ATLEAST(2, 0, 12)
--        SDL_SetGamepadPlayerIndex(controller, user_id);
--#endif
--        break;
--      }
-+  // [s37] Do NOT claim a xam user_index slot on connect. Slot assignment happens
-+  // lazily, the first time this specific physical controller presses a button (see
-+  // ClaimSlotForDeviceLocked) - see that function for why connection order isn't a
-+  // reliable stand-in for "who's actually playing as P1/P2/...".
-+  unbound_controllers_.push_back(controller);
-+  REXLOG_INFO("SDL OnControllerDeviceAdded: connected, awaiting first input to claim a slot.");
-+}
-+
-+SDL_Gamepad* SDLInputDriver::TakePendingControllerLocked(SDL_JoystickID instance_id) {
-+  for (auto it = unbound_controllers_.begin(); it != unbound_controllers_.end(); ++it) {
-+    if (SDL_GetJoystickID(SDL_GetGamepadJoystick(*it)) == instance_id) {
-+      SDL_Gamepad* controller = *it;
-+      unbound_controllers_.erase(it);
-+      return controller;
-     }
-   }
--  if (user_id >= 0) {
--    auto& state = controllers_.at(user_id);
--    state = {controller, {}};
--    // XInput seems to start with packet_number = 1 .
--    state.state_changed = true;
--    UpdateXCapabilities(state);
-+  return nullptr;
-+}
- 
--    REXLOG_INFO("SDL OnControllerDeviceAdded: Added at index {}.", user_id);
--  } else {
--    // No more controllers needed, close it.
--    SDL_CloseGamepad(controller);
--    REXLOG_WARN("SDL OnControllerDeviceAdded: Ignored. No free slots.");
-+std::optional<size_t> SDLInputDriver::ClaimSlotForDeviceLocked(SDL_Gamepad* controller) {
-+  // [s37, unified s39] Assign the xam user_index slot at the moment a controller's
-+  // first button is pressed, in PRESS order, rather than at SDL connection time. Two
-+  // prior approaches both broke local co-op:
-+  //  - Honoring SDL_GetGamepadPlayerIndex() (the controller's own remembered LED
-+  //    index from a past session) meant a pad that was P2 last time came back as P2
-+  //    even when reconnected alone as the only pad - it never became P1, so it never
-+  //    matched P1's existing save (forced a new character).
-+  //  - Assigning by raw SDL connection/enumeration order (s36) fixed that single-pad
-+  //    case, but with 4 pads connected simultaneously at boot, that order is decided
-+  //    by USB/driver enumeration - NOT by which human presses A first - and it can
-+  //    change between boots. Whichever pad happened to land in a slot silently became
-+  //    "that" player's identity, so pressing A with what you intend to be P1 could
-+  //    land on a guest slot with no existing save -> forced into character creation.
-+  // Claiming on first button press ties identity to the one thing the player actually
-+  // controls: the ORDER they press a button, matching how a real Xbox 360 title
-+  // screen assigns "press A to join" slots.
-+  //
-+  // [s39] The keyboard (MnkInputDriver) claims through the SAME SlotArbiter on its
-+  // own first key/click, so there's no fixed "keyboard is always P1" reservation
-+  // anymore - whichever input source (keyboard or a controller) presses/types first
-+  // gets slot 0 (P1). mnk_mode still just turns keyboard input on/off; it no longer
-+  // pins keyboard to a specific user_index.
-+  auto slot = rex::input::SlotArbiter::ClaimNextSlot();
-+  if (!slot) {
-+    return std::nullopt;
-   }
-+#if SDL_VERSION_ATLEAST(2, 0, 12)
-+  SDL_SetGamepadPlayerIndex(controller, static_cast<int>(*slot));
-+#endif
-+  auto& state = controllers_.at(*slot);
-+  state = {controller, {}};
-+  // XInput seems to start with packet_number = 1 .
-+  state.state_changed = true;
-+  UpdateXCapabilities(state);
-+  REXLOG_INFO("SDL: controller \"{}\" claimed user_index {} on first input.",
-+              SDL_GetGamepadName(controller), *slot);
-+  return *slot;
- }
- 
- void SDLInputDriver::OnControllerDeviceRemovedLocked(const SDL_Event& event) {
--  // Find the disconnected gamecontroller and close it.
-+  // Find the disconnected gamecontroller and close it - it may be bound to a xam
-+  // slot already, or still sitting unclaimed in unbound_controllers_.
-   auto idx = GetControllerIndexFromInstanceID(event.cdevice.which);
-   if (idx) {
-     SDL_CloseGamepad(controllers_.at(*idx).sdl);
-     controllers_.at(*idx) = {};
-     keystroke_states_.at(*idx) = {};
-+    // [s39] Free the slot in the shared arbiter so a reconnected/new controller (or
-+    // the keyboard) can claim it again.
-+    rex::input::SlotArbiter::ReleaseSlot(static_cast<uint32_t>(*idx));
-     REXLOG_INFO("SDL OnControllerDeviceRemoved: Removed at player index {}.", *idx);
-+    return;
-+  }
-+  SDL_Gamepad* pending = TakePendingControllerLocked(event.cdevice.which);
-+  if (pending) {
-+    SDL_CloseGamepad(pending);
-+    REXLOG_INFO("SDL OnControllerDeviceRemoved: Removed unclaimed controller.");
-   } else {
-     // Can happen in case all slots where full previously.
-     REXLOG_WARN("SDL OnControllerDeviceRemoved: Ignored. Unused device.");
-@@ -501,7 +540,11 @@ void SDLInputDriver::OnControllerDeviceRemovedLocked(const SDL_Event& event) {
- 
- void SDLInputDriver::OnControllerDeviceAxisMotionLocked(const SDL_Event& event) {
-   auto idx = GetControllerIndexFromInstanceID(event.gaxis.which);
--  assert(idx);
-+  if (!idx) {
-+    // Unclaimed (or unknown) device - stick drift alone should never claim a slot,
-+    // only an actual button press does (see ClaimSlotForDeviceLocked). Ignore.
-+    return;
-+  }
-   auto& pad = controllers_.at(*idx).state.gamepad;
-   switch (event.gaxis.axis) {
-     case SDL_GAMEPAD_AXIS_LEFTX:
-@@ -566,7 +609,28 @@ void SDLInputDriver::OnControllerDeviceButtonChangedLocked(const SDL_Event& even
-   static_assert(SDL_GAMEPAD_BUTTON_DPAD_RIGHT == 14);
- 
-   auto idx = GetControllerIndexFromInstanceID(event.gdevice.which);
--  assert(idx);
-+  if (!idx) {
-+    // [s37] Unclaimed device: only a button DOWN claims a xam slot (an UP with no
-+    // matching DOWN shouldn't happen, but ignore it defensively rather than assert).
-+    if (!event.gbutton.down) {
-+      return;
-+    }
-+    SDL_Gamepad* pending = TakePendingControllerLocked(event.gdevice.which);
-+    if (!pending) {
-+      // Unknown device (shouldn't happen - added devices always end up in either
-+      // controllers_ or unbound_controllers_). Ignore rather than assert.
-+      return;
-+    }
-+    idx = ClaimSlotForDeviceLocked(pending);
-+    if (!idx) {
-+      // All 4 slots already claimed by other controllers - nothing left to give this
-+      // one, drop it.
-+      REXLOG_WARN("SDL: controller \"{}\" pressed a button but no free slot remains.",
-+                  SDL_GetGamepadName(pending));
-+      SDL_CloseGamepad(pending);
-+      return;
-+    }
-+  }
-   auto& controller = controllers_.at(*idx);
- 
-   uint16_t xbuttons = controller.state.gamepad.buttons;
 diff --git a/src/kernel/xam/apps/xam_app.cpp b/src/kernel/xam/apps/xam_app.cpp
 index 7f10ece..8f47ef9 100644
 --- a/src/kernel/xam/apps/xam_app.cpp
@@ -2652,30 +2090,6 @@ index 80c3634..a5a59af 100644
    auto* is = input_system();
    auto result = is->GetKeystroke(user_index, flags, keystroke);
    if (XSUCCEEDED(result)) {
-@@ -199,6 +378,23 @@ i32 XamUserGetDeviceContext_entry(u32 user_index, u32 unk, mapped_u32 out_ptr) {
- }  // namespace kernel
- }  // namespace rex
- 
-+// Host hook the guest's "return to title screen" routine (sub_82632E00 in the
-+// recompiled game code - the live handler behind the main-menu B -> confirm
-+// dialog -> A/Aceptar flow) calls instead of running its own session teardown,
-+// so the game closes like a normal PC game's Exit option rather than
-+// reloading the attract/title screen. Requests a clean window close (same
-+// path as clicking the window's X button) so the app shuts down through its
-+// normal exit sequence.
-+extern "C" void D3RequestGameExit() {
-+  if (auto* rt = rex::Runtime::instance()) {
-+    if (auto* win = rt->display_window()) {
-+      win->RequestClose();
-+      return;
-+    }
-+  }
-+  std::exit(0);
-+}
-+
- REX_EXPORT(__imp__XamResetInactivity, rex::kernel::xam::XamResetInactivity_entry)
- REX_EXPORT(__imp__XamEnableInactivityProcessing,
-            rex::kernel::xam::XamEnableInactivityProcessing_entry)
 diff --git a/src/kernel/xam/xam_msg.cpp b/src/kernel/xam/xam_msg.cpp
 index 704eb0c..4f4ea12 100644
 --- a/src/kernel/xam/xam_msg.cpp
@@ -2775,10 +2189,10 @@ index e0e7dab..7c54eef 100644
  
    return X_STATUS_SUCCESS;
 diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
-index 0145a56..2f61c4a 100644
+index 5a572ce..373a724 100644
 --- a/src/kernel/xam/xam_ui.cpp
 +++ b/src/kernel/xam/xam_ui.cpp
-@@ -499,10 +499,10 @@ u32 XamShowKeyboardUI_entry(u32 user_index, u32 flags, mapped_wstring default_te
+@@ -503,10 +503,10 @@ u32 XamShowKeyboardUI_entry(u32 user_index, u32 flags, mapped_wstring default_te
  u32 XamShowDeviceSelectorUI_entry(u32 user_index, u32 content_type, u32 content_flags,
                                    u64 total_requested, mapped_u32 device_id_ptr,
                                    mapped_void overlapped) {
@@ -2794,7 +2208,7 @@ index 0145a56..2f61c4a 100644
        [device_id_ptr]() -> X_RESULT {
          // NOTE: 0x00000001 is our dummy device ID from xam_content.cc
 diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
-index b84e9a4..4280525 100644
+index 8778066..aafe053 100644
 --- a/src/kernel/xam/xam_user.cpp
 +++ b/src/kernel/xam/xam_user.cpp
 @@ -12,6 +12,7 @@
@@ -3179,7 +2593,7 @@ index 8684eda..76cf19c 100644
    if (!base_addr_value) {
      return X_STATUS_MEMORY_NOT_ALLOCATED;
 diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
-index 67f7070..baa6716 100644
+index bd43109..b20e3a9 100644
 --- a/src/system/function_dispatcher.cpp
 +++ b/src/system/function_dispatcher.cpp
 @@ -23,6 +23,9 @@
@@ -3214,10 +2628,10 @@ index 67f7070..baa6716 100644
  
  PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
 diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
-index 7a62617..8237a66 100644
+index 697399c..273804d 100644
 --- a/src/system/kernel_state.cpp
 +++ b/src/system/kernel_state.cpp
-@@ -1043,8 +1043,8 @@ void KernelState::BroadcastNotification(XNotificationID id, uint32_t data) {
+@@ -1122,8 +1122,8 @@ void KernelState::BroadcastNotification(XNotificationID id, uint32_t data) {
    std::vector<object_ref<XNotifyListener>> snapshot;
    {
      auto global_lock = global_critical_region_.Acquire();
@@ -3228,7 +2642,7 @@ index 7a62617..8237a66 100644
      snapshot = notify_listeners_;
    }
    for (const auto& notify_listener : snapshot) {
-@@ -1063,6 +1063,9 @@ void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
+@@ -1142,6 +1142,9 @@ void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
    XOverlappedSetExtendedError(ptr, extended_error);
    XOverlappedSetLength(ptr, length);
    X_HANDLE event_handle = XOverlappedGetEvent(ptr);
@@ -3238,7 +2652,7 @@ index 7a62617..8237a66 100644
    if (event_handle) {
      auto ev = object_table()->LookupObject<XEvent>(event_handle);
      assert_not_null(ev);
-@@ -1070,15 +1073,31 @@ void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
+@@ -1149,15 +1152,31 @@ void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
        ev->Set(0, false);
      }
    }
@@ -3333,7 +2747,7 @@ index d358f39..045509c 100644
  
  rex::Runtime* XObject::emulator() const {
 diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
-index e6766c8..e629eac 100644
+index 77bce25..9b9e7f8 100644
 --- a/src/system/xthread.cpp
 +++ b/src/system/xthread.cpp
 @@ -529,13 +529,65 @@ X_STATUS XThread::Exit(int exit_code) {
@@ -3416,25 +2830,16 @@ index e6766c8..e629eac 100644
      rex::thread::Thread::Exit(exit_code);
    } else {
 diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
-index 18ad4ad..970e42c 100644
+index 5bd3dc5..bf1b570 100644
 --- a/src/ui/CMakeLists.txt
 +++ b/src/ui/CMakeLists.txt
-@@ -101,12 +101,24 @@ target_link_libraries(rexui PUBLIC
-     imgui::imgui
+@@ -116,12 +116,15 @@ target_link_libraries(rexui PUBLIC
  )
+ target_link_libraries(rexui PRIVATE utf8cpp)
  
-+# The spatial present effects -- FSR 1.0 (EASU+RCAS) and CAS -- are fully
-+# self-contained: they run precompiled shader bytecode shipped in-tree
-+# (ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_* and
-+# ui/shaders/vulkan_spirv/guest_output_ffx_*) and compute all their setup
-+# constants inline in C++ (presenter.h). They need NO external AMD FidelityFX
-+# SDK source or runtime. REX_HAS_FIDELITYFX_SDK therefore gates only
-+# self-contained code and is enabled unconditionally so `present_effect=cas`
-+# and `present_effect=fsr` are available in every build.
-+#
-+# The TEMPORAL upscalers (FSR2/FSR3) DO require the external FidelityFX runtime
-+# and are separately gated by REX_HAS_FIDELITYFX_RUNTIME below. The SDK source
-+# include dirs are only needed by that runtime path, so they stay conditional.
++# Spatial present effects (FSR 1.0 EASU+RCAS, CAS) are self-contained: precompiled
++# shader bytecode ships in-tree and constants are computed inline, so no external
++# FidelityFX SDK is needed. Define unconditionally (Windows port patch).
 +target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
  if(REXGLUE_FIDELITYFX_SOURCE_DIR AND EXISTS "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include")
      target_include_directories(rexui PRIVATE
@@ -3446,10 +2851,10 @@ index 18ad4ad..970e42c 100644
  
  set(REXUI_HAS_FIDELITYFX_RUNTIME OFF)
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
-index b6dc208..5565a28 100644
+index 7360ed9..02f55d8 100644
 --- a/src/ui/presenter.cpp
 +++ b/src/ui/presenter.cpp
-@@ -46,8 +46,22 @@ REXCVAR_DEFINE_INT32(present_safe_area_y, 90, "UI/Presenter",
+@@ -42,8 +42,22 @@ REXCVAR_DEFINE_INT32(present_safe_area_y, 90, "UI/Presenter",
  
  #if defined(REX_HAS_FIDELITYFX_SDK)
  REXCVAR_DEFINE_STRING(present_effect, "bilinear", "UI/Presenter",
@@ -3475,31 +2880,10 @@ index b6dc208..5565a28 100644
  
  REXCVAR_DEFINE_DOUBLE(present_cas_additional_sharpness,
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
-index c6fdbcf..e1268f9 100644
+index 2caeba7..0b183c8 100644
 --- a/src/ui/rex_app.cpp
 +++ b/src/ui/rex_app.cpp
-@@ -209,8 +209,19 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
-     auto* input_sys = static_cast<rex::input::InputSystem*>(runtime_->input_system());
-     if (input_sys) {
-       input_sys->SetActiveCallback([this]() {
--        if (!debug_overlay_ && !console_overlay_ && !settings_overlay_)
-+        // Only trust ImGui's input-capture flags while a dialog is actually
-+        // open. Once the last dialog closes the drawer detaches and stops
-+        // updating io, FREEZING WantTextInput / WantCaptureMouse at their last
-+        // (in-dialog) values - reading them then would latch guest input off
-+        // forever (this was the "keyboard dead after naming a hero" bug). With
-+        // no dialog open, the game is always active.
-+        if (!imgui_drawer_->has_dialogs())
-           return true;
-+        // A text field is taking input (e.g. the hero-name keyboard dialog):
-+        // suppress guest input so typing doesn't also drive the emulated pad.
-+        if (imgui_drawer_->GetIO().WantTextInput)
-+          return false;
-+        // Other dialogs/overlays: keep the game active unless ImGui grabs the mouse.
-         return !imgui_drawer_->GetIO().WantCaptureMouse;
-       });
-     }
-@@ -289,9 +300,9 @@ bool ReXApp::SetupPresentation() {
+@@ -341,9 +341,9 @@ bool ReXApp::SetupPresentation() {
      return false;
    }
  
@@ -3512,9 +2896,3 @@ index c6fdbcf..e1268f9 100644
  
    window_->AddListener(this);
    window_->AddInputListener(this, 0);
-diff --git a/thirdparty/libmspack b/thirdparty/libmspack
---- a/thirdparty/libmspack
-+++ b/thirdparty/libmspack
-@@ -1 +1 @@
--Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837
-+Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837-dirty

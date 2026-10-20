@@ -42,6 +42,10 @@ if (Test-Path -LiteralPath (Join-Path $RootDir "diablo3.exe")) {
 }
 $Game  = Join-Path $RootDir "game"
 
+# The player name isn't a cvar (the game reads it from SOTR_USERNAME), so it
+# can't live in diablo3.toml; it gets its own small file instead.
+$NameFile = Join-Path $env:LOCALAPPDATA "SoulsOfTheReaper\player_name.txt"
+
 # ---------------------------------------------------------------------------
 # Game language options. D3 picks its language from user_language / user_country
 # (XCONFIG_USER_LANGUAGE) and loads the matching <locale>_*.cpk; if that
@@ -88,7 +92,10 @@ function Get-SavedState {
     param([array]$Langs)
     $fpsByPath = @(@(30,60,120,144), @(60,120,144,240))
     # Defaults (used when the toml is absent or a key is missing).
-    $s = @{ lang = 0; path = 1; fps = 1; scale = 0; res = 0; display = 0; mouse = 0 }
+    $s = @{ lang = 0; path = 1; fps = 1; scale = 0; res = 0; display = 0; mouse = 0; username = '' }
+    if (Test-Path -LiteralPath $NameFile) {
+        $s.username = "$(Get-Content -LiteralPath $NameFile -Raw -Encoding utf8)".Trim()
+    }
 
     if (Test-Path -LiteralPath $Toml) {
         $kv = @{}
@@ -310,6 +317,15 @@ function Start-Game([PSCustomObject]$cfg) {
         -Fullscreen (B $cfg.fullscreen) `
         -PresentEffect $cfg.present -ResScale ([int]$cfg.resScale) `
         -UserLanguage ([int]$cfg.langId) -UserCountry ([int]$cfg.countryId)
+
+    # Player name: XAM name buffers hold 16 bytes including the terminator, so
+    # keep at most 15 characters. diablo3.exe inherits this environment; an
+    # empty value removes the variable and the game falls back to "User".
+    $name = "$($cfg.username)".Trim()
+    if ($name.Length -gt 15) { $name = $name.Substring(0, 15) }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $NameFile) | Out-Null
+    Set-Content -LiteralPath $NameFile -Value $name -Encoding utf8
+    $env:SOTR_USERNAME = $name
 
     # Start-Process's -ArgumentList does NOT quote array elements that contain
     # spaces (verified: it just joins them with a space) - an unquoted

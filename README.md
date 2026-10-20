@@ -17,43 +17,28 @@ Download the latest release from the [Releases](../../releases) page, extract th
 ### Requirements
 
 - Windows 10/11 x64
-- Visual Studio 2022 Community (CMake 3.25+, Ninja, MSVC headers)
+- Visual Studio 2022 Community with the C++ and CMake workloads (CMake 3.25+, Ninja, MSVC headers)
 - LLVM/Clang 22+ installed to `C:\Program Files\LLVM\`
-- [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) cloned as `rexglue-sdk/` next to this folder
-- Diablo III Xbox 360 disc dump:
-  - `game/Default_decrypted.exe` — decrypted XEX (flat binary, base 0x82000000)
+- Git (the build clones the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) for you)
+- The USA Diablo III: Ultimate Evil Edition Xbox 360 disc, extracted to `game/` (or pass `-GameDir`):
+  - `game/Default.xex` — the disc's unmodified executable (the build checks its SHA-256)
   - `game/CPKs/` — all CPK archives from the disc (7.4 GB)
   - A valid Diablo III RoS save in `Documents\diablo3\<xuid>\394F07D4\00000001\d3save\`
 
 ### Steps
 
-**1. Apply SDK patches**
+**1. Build the SDK and the game** (first run ~25 min: SDK ~10 min, codegen ~12 min)
 ```powershell
-git -C rexglue-sdk apply ..\patches\rexglue-sdk.patch
-Copy-Item patches\d3d_screenshot.cpp rexglue-sdk\src\graphics\d3d12\
+pwsh -File port\build.ps1 -BuildSdk
 ```
 
-**2. Codegen** (~12 min, one-time per XEX)
-```powershell
-sdk-bin\win-amd64\bin\rexglue.exe --log-level info --log-file port\cg.log codegen port\diablo3_manifest.toml
-port\apply_generated_patches.ps1
-```
+This clones the ReXGlue SDK into `rexglue-sdk/` at the commit pinned in `port/rexglue.lock.json` (v0.10.0), applies the patches in `patches/`, builds and installs it, recompiles `game/Default.xex` into `port/generated/default`, re-applies the hand patches (`port/apply_generated_patches.ps1`, see **Known Issues**) and builds the game.
 
-`apply_generated_patches.ps1` re-applies the hand patches codegen can't produce on its own (see **Known Issues**). Run it every time codegen is (re-)run — it's idempotent, safe to run more than once.
-
-**3. Build**
-```powershell
-pwsh -File port\build.ps1 -Config RelWithDebInfo
-```
+Later builds can drop `-BuildSdk`; add `-SkipCodegen` to reuse the generated sources after changing only code in `port/src`, and `-GameDir <folder>` if the disc isn't in `game/`.
 
 Output: `port\out\build\win-amd64-relwithdebinfo\diablo3.exe`
 
-> If only the runtime DLL changed after a rebuild, copy it manually:
-> ```powershell
-> Copy-Item rexglue-sdk\out\win-amd64\rexruntimerd.dll port\out\build\win-amd64-relwithdebinfo\ -Force
-> ```
-
-**4. Build the launcher**
+**2. Build the launcher**
 
 The launcher's compiled exe, icon, and the WebView2 SDK redistributable DLLs aren't in the repo (binaries, not code) - only its source is (`launcher/Launcher.ps1`, `launcher/build_launcher.ps1`, `launcher/v6_borderless_final.html`). To build it:
 - Get the WebView2 SDK redistributable DLLs (`Microsoft.Web.WebView2.Core.dll`, `Microsoft.Web.WebView2.WinForms.dll`, `WebView2Loader.dll`) from the [`Microsoft.Web.WebView2`](https://www.nuget.org/packages/Microsoft.Web.WebView2) NuGet package and place them in `launcher\lib\`.
@@ -64,7 +49,7 @@ launcher\build_launcher.ps1
 Copy-Item launcher\dist\SoulsOfTheReaper.exe . -Force
 ```
 
-**5. Run**
+**3. Run**
 ```
 SoulsOfTheReaper.exe
 ```
@@ -98,11 +83,25 @@ Keyboard and up to 4 gamepads all work at once — whoever presses/types first a
 
 ---
 
+## System Link (LAN play)
+
+Copies of the game on different PCs in the same local network can play together through the game's own System Link menu, as on two Xbox 360 consoles linked by a cable or router.
+
+- **Give each PC its own player number.** Add `systemlink_instance = 1` (2, 3, … for further PCs) to `diablo3.toml` next to `diablo3.exe` on every PC but one. Each number gets its own player ID and the default name `User<N>`; `0` (the default) keeps the classic ID, so existing saves keep working. The launcher leaves this line alone.
+- **Set a player name** in the launcher's **Player Name** row (up to 15 characters, blank = `User`). It's remembered in `%LOCALAPPDATA%\SoulsOfTheReaper\player_name.txt` and passed to the game as the `SOTR_USERNAME` environment variable, which you can also set yourself when starting `diablo3.exe` directly.
+- **Several network adapters?** If a PC is on more than one network (Wi-Fi plus a VM switch, for example), set `systemlink_address = "192.168.1.20"` to the address the other player can reach.
+- Allow `diablo3.exe` through Windows Firewall on private networks when asked.
+- `systemlink_trace = true` logs the game's network and session calls, to see what's going on when the PCs don't find each other.
+
+The networking lives in `patches/systemlink/` (new SDK source files) and `patches/rexglue-systemlink-net.patch` (the hooks into the SDK's sockets and XNet calls); `patches/rexglue-username.patch` reads the player name.
+
+---
+
 ## Known Issues
 
 ### Hand patches to generated code (re-apply after every codegen)
 
-`port/generated/` is rebuilt from scratch by the codegen step, which wipes two fixes it can't produce on its own. Run `port\apply_generated_patches.ps1` after every codegen (see step 2 above) to reapply both:
+`port/generated/` is rebuilt from scratch by the codegen step, which wipes two fixes it can't produce on its own. `port\build.ps1` reapplies both after every codegen; if you run codegen by hand, run `port\apply_generated_patches.ps1` afterwards. It finds each function by name, so it doesn't depend on how codegen splits the output into files:
 
 - **setjmp/longjmp fix** (`sub_831583B0` / `sub_83158680`) — the recompiler mistranslates the guest setjmp/longjmp pair, corrupting Lua's protected-call mechanism and crashing the GC on startup. Replaced with host `ppc_setjmp`/`ppc_longjmp`.
 - **Main-menu exit fix** (`sub_82632E00`) — redirects the game's "leave session, return to title screen" routine (reached from the main-menu B → confirm dialog → A/Aceptar flow) to close the game instead, like a normal PC game's Exit option.

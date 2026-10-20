@@ -66,6 +66,11 @@
   .opt-row:hover .opt-label,.opt-row.active .opt-label,.opt-row:focus-visible .opt-label{color:#e2d7bd}
   .cycler{position:relative;z-index:1;display:flex;align-items:center;gap:8px;min-width:150px;justify-content:flex-end}
   .opt-val{font-family:var(--body);font-size:14px;color:var(--bone);min-width:92px;text-align:center;text-shadow:0 1px 3px #000}
+  .opt-name{font-family:var(--body);font-size:14px;color:var(--bone);width:150px;text-align:center;
+    background:none;border:0;border-bottom:1px solid rgba(122,106,76,.35);padding:1px 4px;outline:none;
+    text-shadow:0 1px 3px #000}
+  .opt-name::placeholder{color:var(--muted)}
+  .opt-name:focus{border-bottom-color:var(--crimson-hi)}
   .arw{font-family:var(--body);font-size:17px;line-height:1;color:var(--crimson-hi);
     background:none;border:0;cursor:pointer;padding:1px 5px;opacity:.3;transition:opacity .16s,text-shadow .16s}
   .opt-row:hover .arw,.opt-row.active .arw,.opt-row:focus-visible .arw{opacity:1}
@@ -227,6 +232,8 @@
     act_dodgeR3:['Dodge (R3)','Esquivar (R3)','Esquiver (R3)','Ausweichen (R3)','Schivata (R3)','Esquivar (R3)','Уклонение (R3)'],
     act_inventory:['Inventory','Inventario','Inventaire','Inventar','Inventario','Inventário','Инвентарь'],
     act_pauseStart:['Pause','Pausa','Pause','Pause','Pausa','Pausa','Пауза'],
+    lbl_name:['Player Name','Nombre del Jugador','Nom du Joueur','Spielername','Nome del Giocatore','Nome do Jogador','Имя игрока'],
+    tip_name:['Your name in game and in System Link. Up to 15 characters; blank = User.','Tu nombre en el juego y en System Link. Hasta 15 caracteres; vacío = User.','Votre nom en jeu et en System Link. 15 caractères max ; vide = User.','Dein Name im Spiel und bei System Link. Bis zu 15 Zeichen; leer = User.','Il tuo nome nel gioco e in System Link. Fino a 15 caratteri; vuoto = User.','Seu nome no jogo e no System Link. Até 15 caracteres; vazio = User.','Ваше имя в игре и в System Link. До 15 символов; пусто = User.'],
   };
 
   // Game language options, injected by Launcher.ps1. Each: {code, name,
@@ -250,10 +257,11 @@
   // Option state. Defaults = RTV @ 120fps (path:1, fps:1 -> FPS[1][1]=120); these
   // apply only on a fresh install. Otherwise Launcher.ps1 reads the last-used
   // values back out of diablo3.toml and injects them as window.SAVED_STATE, so
-  // the launcher reopens on whatever you last played with.
-  const _sdefault={lang:0,path:1,fps:1,scale:0,res:0,display:0,mouse:0};
+  // the launcher reopens on whatever you last played with. username is the
+  // player name, which Launcher.ps1 keeps in its own file.
+  const _sdefault={lang:0,path:1,fps:1,scale:0,res:0,display:0,mouse:0,username:''};
   if(window.SAVED_STATE){Object.keys(_sdefault).forEach(k=>{
-    if(typeof window.SAVED_STATE[k]==='number')_sdefault[k]=window.SAVED_STATE[k];});}
+    if(typeof window.SAVED_STATE[k]===typeof _sdefault[k])_sdefault[k]=window.SAVED_STATE[k];});}
   if(_sdefault.lang>=LANGS.length)_sdefault.lang=0;  // saved language no longer installed
   const state={..._sdefault,view:'main',binds:newBinds()};
   const menu=document.getElementById('menu');
@@ -328,6 +336,7 @@
       {key:'res',label:T.lbl_res[L],vals:['1×','2×','3×'],tip:T.tip_res[L]},
       {key:'display',label:T.lbl_display[L],vals:[T.val_full[L],T.val_win[L]]},
       {key:'mouse',label:T.lbl_mouse[L],vals:[T.val_off[L],T.val_on[L]]},
+      {key:'username',label:T.lbl_name[L],input:true,novals:true,tip:T.tip_name[L]},
       {key:'remap',label:T.remapBtn[L],nav:true,novals:true},
     ];
     rows.forEach(d=>{
@@ -335,15 +344,28 @@
         label:d.label,value:d.novals?undefined:d.vals[state[d.key]],tip:d.tip,
         onLeft:d.novals?undefined:()=>cycle(d.key,-1),
         onRight:d.novals?undefined:()=>cycle(d.key,1),
-        onClick:()=>{lastKey=d.key; if(d.nav)goRemap(); else cycle(d.key,1);},
+        onClick:()=>{lastKey=d.key; if(d.nav)goRemap(); else if(d.input)row.querySelector('input').focus(); else cycle(d.key,1);},
         cls:(d.key===lastKey?'active':'')+(d.nav?' nav':''),
       });
       row.dataset.key=d.key;
+      if(d.input)row.appendChild(nameInput());
       row.addEventListener('focus',()=>{lastKey=d.key;
         document.querySelectorAll('.opt-row').forEach(x=>x.classList.remove('active'));row.classList.add('active');});
       menu.appendChild(row);
     });
     const act=menu.querySelector('.opt-row.active');if(act)act.focus({preventScroll:true});
+  }
+
+  // Text box for the player name (XAM keeps at most 15 characters).
+  function nameInput(){
+    const input=document.createElement('input');
+    input.className='opt-name';input.type='text';input.maxLength=15;input.spellcheck=false;
+    input.placeholder='User';input.value=state.username;input.setAttribute('aria-label',T.lbl_name[UIL()]);
+    input.addEventListener('input',()=>{state.username=input.value;});
+    // Keep Space/Enter/arrows for typing instead of the row's own key handling.
+    input.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Enter')input.closest('.opt-row').focus();});
+    input.addEventListener('click',e=>e.stopPropagation());
+    return input;
   }
 
   function stopListening(){if(cancelListen){cancelListen();cancelListen=null;}}
@@ -446,6 +468,8 @@
       lang:state.lang,
       langId:LANGS[state.lang].langId,
       countryId:LANGS[state.lang].countryId,
+      // Passed to the game as SOTR_USERNAME.
+      username:state.username.trim(),
     };
   }
   playBtn.addEventListener('click',e=>{

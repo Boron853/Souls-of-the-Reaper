@@ -278,6 +278,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"
 [Files]
 Source: "{#GameExeDir}\diablo3.exe";              DestDir: "{app}";       Flags: ignoreversion
 Source: "{#GameExeDir}\rexruntimerd.dll";         DestDir: "{app}";       Flags: ignoreversion
+Source: "{#GameExeDir}\rexgpu-xenosrd.dll";       DestDir: "{app}";       Flags: ignoreversion
 Source: "{#RepoRoot}launcher\dist\SoulsOfTheReaper.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}apply_config.ps1";            DestDir: "{app}";       Flags: ignoreversion
 Source: "{#RepoRoot}tools\extract-xiso.exe";      DestDir: "{app}\tools"; Flags: ignoreversion

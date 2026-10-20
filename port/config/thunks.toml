@@ -1,0 +1,10 @@
+# Four-byte tail-call thunks confirmed in the unmodified disc image.
+# Each branches to 0x82FE8638 and is followed by a zero word.
+[functions."0x82FE9448"]
+size = 4
+
+[functions."0x82FEB0C0"]
+size = 4
+
+[functions."0x82FEC3F8"]
+size = 4
