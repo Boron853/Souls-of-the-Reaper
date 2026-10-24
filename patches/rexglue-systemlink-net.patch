@@ -1,0 +1,769 @@
+diff --git a/src/system/xsocket.cpp b/src/system/xsocket.cpp
+--- a/src/system/xsocket.cpp
++++ b/src/system/xsocket.cpp
+@@ -186,14 +186,14 @@
+   }
+   */
+ 
+-  sockaddr_in nfrom;
++  sockaddr_in nfrom = {};
+   socklen_t nfromlen = sizeof(sockaddr_in);
+   int ret = recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags,
+                      (sockaddr*)&nfrom, &nfromlen);
+   if (from) {
+     from->sin_family = nfrom.sin_family;
+     from->sin_addr = ntohl(nfrom.sin_addr.s_addr);  // BE <- BE
+-    from->sin_port = nfrom.sin_port;
++    from->sin_port = ntohs(nfrom.sin_port);
+     std::memset(from->x_sin_zero, 0, sizeof(from->x_sin_zero));
+   }
+ 
+@@ -221,11 +221,12 @@
+   }
+   */
+ 
+-  sockaddr_in nto;
++  sockaddr_in nto = {};
+   if (to) {
+-    nto.sin_addr.s_addr = to->sin_addr;
+-    nto.sin_family = to->sin_family;
+-    nto.sin_port = to->sin_port;
++    // `to` holds host-order values (rex::be converts on read); the host sockaddr needs network order.
++    nto.sin_addr.s_addr = htonl(static_cast<uint32_t>(to->sin_addr));
++    nto.sin_family = static_cast<decltype(nto.sin_family)>(to->sin_family);
++    nto.sin_port = htons(static_cast<uint16_t>(to->sin_port));
+   }
+ 
+   return sendto(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags,
+diff --git a/src/core/socket_win.cpp b/src/core/socket_win.cpp
+--- a/src/core/socket_win.cpp
++++ b/src/core/socket_win.cpp
+@@ -14,6 +14,20 @@
+ }
+ 
+ int socket_ioctl(SocketHandle handle, uint32_t cmd, uint8_t* arg) {
++  // Guest arguments are big-endian u_long values.
++  constexpr uint32_t kFionread = 0x4004667F;
++  constexpr uint32_t kFionbio = 0x8004667E;
++  if (arg && (cmd == kFionbio || cmd == kFionread)) {
++    u_long value = (u_long(arg[0]) << 24) | (u_long(arg[1]) << 16) | (u_long(arg[2]) << 8) | u_long(arg[3]);
++    const int ret = ioctlsocket(static_cast<SOCKET>(handle), cmd, &value);
++    if (ret == 0 && cmd == kFionread) {
++      arg[0] = uint8_t(value >> 24);
++      arg[1] = uint8_t(value >> 16);
++      arg[2] = uint8_t(value >> 8);
++      arg[3] = uint8_t(value);
++    }
++    return ret;
++  }
+   return ioctlsocket(static_cast<SOCKET>(handle), cmd, reinterpret_cast<u_long*>(arg));
+ }
+ 
+diff --git a/src/core/socket_posix.cpp b/src/core/socket_posix.cpp
+--- a/src/core/socket_posix.cpp
++++ b/src/core/socket_posix.cpp
+@@ -3,6 +3,7 @@
+ 
+ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
+ 
++#include <fcntl.h>
+ #include <sys/ioctl.h>
+ #include <unistd.h>
+ 
+@@ -13,7 +14,34 @@
+ }
+ 
+ int socket_ioctl(SocketHandle handle, uint32_t cmd, uint8_t* arg) {
+-  return ioctl(static_cast<int>(handle), cmd, arg);
++  const int fd = static_cast<int>(handle);
++  // Guest commands are WinSock values and the argument is a big-endian u_long; the numeric ioctl
++  // codes only coincide with the host's on BSD/macOS, so translate them explicitly.
++  constexpr uint32_t kFionread = 0x4004667F;
++  constexpr uint32_t kFionbio = 0x8004667E;
++  if (cmd == kFionbio && arg) {
++    int flags = fcntl(fd, F_GETFL, 0);
++    if (flags < 0) {
++      return -1;
++    }
++    const uint32_t enable = (uint32_t(arg[0]) << 24) | (uint32_t(arg[1]) << 16) |
++                            (uint32_t(arg[2]) << 8) | uint32_t(arg[3]);
++    flags = enable ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
++    return fcntl(fd, F_SETFL, flags);
++  }
++  if (cmd == kFionread && arg) {
++    int available = 0;
++    const int ret = ioctl(fd, FIONREAD, &available);
++    if (ret == 0) {
++      const uint32_t v = static_cast<uint32_t>(available);
++      arg[0] = uint8_t(v >> 24);
++      arg[1] = uint8_t(v >> 16);
++      arg[2] = uint8_t(v >> 8);
++      arg[3] = uint8_t(v);
++    }
++    return ret;
++  }
++  return ioctl(fd, cmd, arg);
+ }
+ 
+ }  // namespace rex::net
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -12,6 +12,7 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <cerrno>
+ #include <cstring>
+ 
+ #if REX_PLATFORM_MAC
+@@ -21,6 +22,7 @@
+ #include <rex/chrono/clock.h>
+ #include <rex/kernel/xam/module.h>
+ #include <rex/kernel/xam/private.h>
++#include <rex/kernel/xam/systemlink.h>
+ #include <rex/kernel/xboxkrnl/error.h>
+ #include <rex/kernel/xboxkrnl/threading.h>
+ #include <rex/logging.h>
+@@ -61,14 +63,7 @@
+ };
+ 
+ // https://github.com/pmrowla/hl2sdk-csgo/blob/master/common/xbox/xboxstubs.h
+-typedef struct {
+-  // FYI: IN_ADDR should be in network-byte order.
+-  in_addr ina;                    // IP address (zero if not static/DHCP)
+-  in_addr inaOnline;              // Online IP address (zero if not online)
+-  rex::be<uint16_t> wPortOnline;  // Online port
+-  uint8_t abEnet[6];              // Ethernet MAC address
+-  uint8_t abOnline[20];           // Online identification
+-} XNADDR;
++// XNADDR is defined in systemlink.h (System Link support).
+ 
+ typedef struct {
+   rex::be<int32_t> status;
+@@ -186,6 +181,9 @@
+   if (params) {
+     assert_true(params->cfgSizeOfStruct == sizeof(XNetStartupParams));
+     std::memcpy(&xnet_startup_params, params, sizeof(XNetStartupParams));
++    REXKRNL_INFO("SystemLink: XNetStartup cfgFlags={:02X} dgramSockets={} streamSockets={}",
++                 xnet_startup_params.cfgFlags, xnet_startup_params.cfgSockMaxDgramSockets,
++                 xnet_startup_params.cfgSockMaxStreamSockets);
+   }
+ 
+   auto xam = REX_KERNEL_STATE()->GetKernelModule<XamModule>("xam.xex");
+@@ -203,6 +201,7 @@
+ }
+ 
+ u32 NetDll_XNetCleanup_entry(u32 caller, mapped_void params) {
++  systemlink::TraceNetCall("XNetCleanup", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
+   auto xam = REX_KERNEL_STATE()->GetKernelModule<XamModule>("xam.xex");
+   // auto xnet = xam->xnet();
+   // xam->set_xnet(nullptr);
+@@ -215,6 +214,7 @@
+ 
+ u32 NetDll_XNetGetOpt_entry(u32 one, u32 option_id, mapped_void buffer_ptr,
+                             mapped_u32 buffer_size) {
++  systemlink::TraceNetCall("XNetGetOpt", static_cast<uint32_t>(option_id), static_cast<uint32_t>(0));
+   assert_true(one == 1);
+   switch (option_id) {
+     case 1:
+@@ -239,6 +239,7 @@
+ }
+ 
+ u32 NetDll_WSAStartup_entry(u32 caller, u16 version, ppc_ptr_t<X_WSADATA> data_ptr) {
++  systemlink::TraceNetCall("WSAStartup", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
+ // TODO(benvanik): abstraction layer needed.
+ #if REX_PLATFORM_WIN32
+   WSADATA wsaData;
+@@ -300,6 +301,7 @@
+                              ppc_ptr_t<XSOCKADDR_IN> from_addr,
+                              ppc_ptr_t<XWSAOVERLAPPED> overlapped_ptr,
+                              mapped_void completion_routine_ptr) {
++  systemlink::TraceNetCall("WSARecvFrom", static_cast<uint32_t>(socket), static_cast<uint32_t>(buffer_count));
+   if (overlapped_ptr) {
+     // auto evt = REX_KERNEL_OBJECTS()->LookupObject<XEvent>(
+     //    overlapped_ptr->event_handle);
+@@ -320,10 +322,11 @@
+                            u32 num_buffers, mapped_u32 num_bytes_sent, u32 flags,
+                            ppc_ptr_t<XSOCKADDR_IN> to_ptr, u32 to_len,
+                            ppc_ptr_t<XWSAOVERLAPPED> overlapped, mapped_void completion_routine) {
++  systemlink::TraceNetCall("WSASendTo", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(num_buffers));
+   assert(!overlapped);
+   assert(!completion_routine);
+ 
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -346,7 +349,12 @@
+   }
+ 
+   N_XSOCKADDR_IN native_to(to_ptr);
+-  socket->SendTo(combined_buffer_mem.data(), combined_buffer_size, flags, &native_to, to_len);
++  if (systemlink::ShouldLogPacket()) {
++    REXKRNL_INFO("SystemLink: WSASendTo {:08X}:{} ({} bytes)", uint32_t(native_to.sin_addr),
++                 uint16_t(native_to.sin_port), combined_buffer_size);
++  }
++  systemlink::SendTo(socket.get(), combined_buffer_mem.data(), combined_buffer_size, flags,
++                     native_to, to_len);
+ 
+   // TODO: Instantly complete overlapped
+ 
+@@ -355,6 +363,7 @@
+ 
+ u32 NetDll_WSAWaitForMultipleEvents_entry(u32 num_events, mapped_u32 events, u32 wait_all,
+                                           u32 timeout, u32 alertable) {
++  systemlink::TraceNetCall("WSAWaitForMultipleEvents", static_cast<uint32_t>(num_events), static_cast<uint32_t>(timeout));
+   if (num_events > 64) {
+     XThread::SetLastError(87);  // ERROR_INVALID_PARAMETER
+     return ~0u;
+@@ -377,12 +386,14 @@
+ }
+ 
+ u32 NetDll_WSACreateEvent_entry() {
++  systemlink::TraceNetCall("WSACreateEvent", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
+   XEvent* ev = new XEvent(REX_KERNEL_STATE());
+   ev->Initialize(true, false);
+   return ev->handle();
+ }
+ 
+ u32 NetDll_WSACloseEvent_entry(u32 event_handle) {
++  systemlink::TraceNetCall("WSACloseEvent", static_cast<uint32_t>(event_handle), static_cast<uint32_t>(0));
+   X_STATUS result = REX_KERNEL_OBJECTS()->ReleaseHandle(event_handle);
+   if (XFAILED(result)) {
+     uint32_t error = xboxkrnl::xeRtlNtStatusToDosError(result);
+@@ -393,6 +404,7 @@
+ }
+ 
+ u32 NetDll_WSAResetEvent_entry(u32 event_handle) {
++  systemlink::TraceNetCall("WSAResetEvent", static_cast<uint32_t>(event_handle), static_cast<uint32_t>(0));
+   X_STATUS result = xboxkrnl::xeNtClearEvent(event_handle);
+   if (XFAILED(result)) {
+     uint32_t error = xboxkrnl::xeRtlNtStatusToDosError(result);
+@@ -403,6 +415,7 @@
+ }
+ 
+ u32 NetDll_WSASetEvent_entry(u32 event_handle) {
++  systemlink::TraceNetCall("WSASetEvent", static_cast<uint32_t>(event_handle), static_cast<uint32_t>(0));
+   X_STATUS result = xboxkrnl::xeNtSetEvent(event_handle, nullptr);
+   if (XFAILED(result)) {
+     uint32_t error = xboxkrnl::xeRtlNtStatusToDosError(result);
+@@ -436,39 +449,22 @@
+ };
+ 
+ u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
+-  // Just return a loopback address atm.
+-  addr_ptr->ina.s_addr = htonl(INADDR_LOOPBACK);
+-  addr_ptr->inaOnline.s_addr = 0;
+-  addr_ptr->wPortOnline = 0;
+-
+-  // TODO(gibbed): A proper mac address.
+-  // RakNet's 360 version appears to depend on abEnet to create "random" 64-bit
+-  // numbers. A zero value will cause RakPeer::Startup to fail. This causes
+-  // 58411436 to crash on startup.
+-  // The 360-specific code is scrubbed from the RakNet repo, but there's still
+-  // traces of what it's doing which match the game code.
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L382
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L4527
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L4467
+-  // "Mac address is a poor solution because you can't have multiple connections
+-  // from the same system"
+-  std::memset(addr_ptr->abEnet, 0xCC, 6);
+-
+-  std::memset(addr_ptr->abOnline, 0, 20);
+-
+-  return XnAddrStatus::XNET_GET_XNADDR_STATIC;
++  systemlink::TraceNetCall("XNetGetTitleXnAddr", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
++  return systemlink::FillTitleXnAddr(addr_ptr.operator->());
+ }
+ 
+ u32 NetDll_XNetGetDebugXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
++  systemlink::TraceNetCall("XNetGetDebugXnAddr", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
+   addr_ptr.Zero();
+ 
+   // XNET_GET_XNADDR_NONE causes caller to gracefully return.
+   return XnAddrStatus::XNET_GET_XNADDR_NONE;
+ }
+ 
+-u32 NetDll_XNetXnAddrToMachineId_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr, mapped_u32 id_ptr) {
+-  // Tell the caller we're not signed in to live (non-zero ret)
+-  return 1;
++u32 NetDll_XNetXnAddrToMachineId_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr,
++                                       mapped_void id_ptr) {
++  systemlink::TraceNetCall("XNetXnAddrToMachineId", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
++  return systemlink::XnAddrToMachineId(addr_ptr.operator->(), id_ptr);
+ }
+ 
+ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string string_out,
+@@ -480,20 +476,23 @@
+ // subsequent socket calls (like a handle to a XNet address)
+ u32 NetDll_XNetXnAddrToInAddr_entry(u32 caller, ppc_ptr_t<XNADDR> xn_addr, mapped_void xid,
+                                     mapped_void in_addr) {
+-  return 1;
++  systemlink::TraceNetCall("XNetXnAddrToInAddr", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
++  return systemlink::XnAddrToInAddr(xn_addr.operator->(), in_addr);
+ }
+ 
+ // Does the reverse of the above.
+ // FIXME: Arguments may not be correct.
+-u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, mapped_void in_addr, ppc_ptr_t<XNADDR> xn_addr,
++u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, ppc_ptr_t<XNADDR> xn_addr,
+                                     mapped_void xid) {
+-  return 1;
++  systemlink::TraceNetCall("XNetInAddrToXnAddr", static_cast<uint32_t>(in_addr), static_cast<uint32_t>(0));
++  return systemlink::InAddrToXnAddr(in_addr, xn_addr.operator->());
+ }
+ 
+ // https://www.google.com/patents/WO2008112448A1?cl=en
+ // Reserves a port for use by system link
+ u32 NetDll_XNetSetSystemLinkPort_entry(u32 caller, u32 port) {
+-  return 1;
++  systemlink::TraceNetCall("XNetSetSystemLinkPort", static_cast<uint32_t>(port), static_cast<uint32_t>(0));
++  return systemlink::SetPort(port);
+ }
+ 
+ // https://github.com/ILOVEPIE/Cxbx-Reloaded/blob/master/src/CxbxKrnl/EmuXOnline.h#L39
+@@ -506,10 +505,12 @@
+ };
+ 
+ u32 NetDll_XNetGetEthernetLinkStatus_entry(u32 caller) {
+-  return 0;
++  systemlink::TraceNetCall("XNetGetEthernetLinkStatus", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
++  return systemlink::EthernetLinkStatus();
+ }
+ 
+ u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle, mapped_u32 pdns) {
++  systemlink::TraceNetCall("XNetDnsLookup", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
+   // TODO(gibbed): actually implement this
+   if (pdns) {
+     auto dns_guest = REX_KERNEL_MEMORY()->SystemHeapAlloc(sizeof(XNDNS));
+@@ -534,6 +535,7 @@
+ }
+ 
+ u32 NetDll_XNetQosServiceLookup_entry(u32 caller, u32 flags, u32 event_handle, mapped_u32 pqos) {
++  systemlink::TraceNetCall("XNetQosServiceLookup", static_cast<uint32_t>(flags), static_cast<uint32_t>(0));
+   // Set pqos as some games will try accessing it despite non-successful result
+   if (pqos) {
+     auto qos_guest = REX_KERNEL_MEMORY()->SystemHeapAlloc(sizeof(XNQOS));
+@@ -550,6 +552,7 @@
+ }
+ 
+ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
++  systemlink::TraceNetCall("XNetQosRelease", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
+   if (!qos) {
+     return X_STATUS_INVALID_PARAMETER;
+   }
+@@ -559,10 +562,14 @@
+ 
+ u32 NetDll_XNetQosListen_entry(u32 caller, mapped_void id, mapped_void data, u32 data_size, u32 r7,
+                                u32 flags) {
+-  return X_ERROR_FUNCTION_FAILED;
++  systemlink::TraceNetCall("XNetQosListen", static_cast<uint32_t>(flags), static_cast<uint32_t>(data_size));
++  // Accept so hosting can proceed; the advertised data is not answered yet (see session layer).
++  REXKRNL_INFO("SystemLink: XNetQosListen flags={:X} data_size={} bps={}", flags, data_size, r7);
++  return 0;
+ }
+ 
+ u32 NetDll_inet_addr_entry(mapped_string addr_ptr) {
++  systemlink::TraceNetCall("inet_addr", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
+   if (!addr_ptr) {
+     return -1;
+   }
+@@ -579,12 +586,14 @@
+ }
+ 
+ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
++  systemlink::TraceNetCall("socket", static_cast<uint32_t>(af), static_cast<uint32_t>(type));
+   XSocket* socket = new XSocket(REX_KERNEL_STATE());
+   X_STATUS result =
+       socket->Initialize(XSocket::AddressFamily((uint32_t)af), XSocket::Type((uint32_t)type),
+                          XSocket::Protocol((uint32_t)protocol));
+ 
+   if (XFAILED(result)) {
++    systemlink::LogSocketFailure("socket", af, type);
+     socket->Release();
+ 
+     uint32_t error = xboxkrnl::xeRtlNtStatusToDosError(result);
+@@ -592,11 +601,12 @@
+     return -1;
+   }
+ 
+-  return socket->handle();
++  return systemlink::SockToGuest(socket->handle());
+ }
+ 
+ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("closesocket", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(0));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -611,7 +621,8 @@
+ }
+ 
+ i32 NetDll_shutdown_entry(u32 caller, u32 socket_handle, i32 how) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("shutdown", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(how));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -624,7 +635,7 @@
+     uint32_t error_code = WSAGetLastError();
+     XThread::SetLastError(error_code);
+ #else
+-    XThread::SetLastError(0x0);
++    XThread::SetLastError(systemlink::HostErrorToWsa(errno));
+ #endif
+   }
+   return ret;
+@@ -632,19 +643,29 @@
+ 
+ u32 NetDll_setsockopt_entry(u32 caller, u32 socket_handle, u32 level, u32 optname,
+                             mapped_void optval_ptr, u32 optlen) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
+-  if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+-    return -1;
+-  }
+-
+-  X_STATUS status = socket->SetOption(level, optname, optval_ptr, optlen);
++  systemlink::TraceNetCall("setsockopt", static_cast<uint32_t>(level), static_cast<uint32_t>(optname));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
++  if (!socket) {
++    // WSAENOTSOCK
++    XThread::SetLastError(0x2736);
++    return -1;
++  }
++
++  int32_t option_value = 0;
++  void* option_ptr = optval_ptr;
++  if (!systemlink::PrepareSocketOption(level, optname, option_ptr, optlen, option_value)) {
++    return 0;
++  }
++  X_STATUS status = socket->SetOption(level, optname, option_ptr, optlen);
++  if (XFAILED(status)) {
++    systemlink::LogSocketFailure("setsockopt", level, optname);
++  }
+   return XSUCCEEDED(status) ? 0 : -1;
+ }
+ 
+ u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void arg_ptr) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("ioctlsocket", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(cmd));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -653,6 +674,7 @@
+ 
+   X_STATUS status = socket->IOControl(cmd, arg_ptr);
+   if (XFAILED(status)) {
++    systemlink::LogSocketFailure("ioctlsocket", socket_handle, cmd);
+     XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
+     return -1;
+   }
+@@ -662,7 +684,8 @@
+ }
+ 
+ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> name, u32 namelen) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("bind", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(namelen));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -671,6 +694,8 @@
+ 
+   N_XSOCKADDR_IN native_name(name);
+   X_STATUS status = socket->Bind(&native_name, namelen);
++  REXKRNL_INFO("SystemLink: bind port {} -> {}", uint16_t(native_name.sin_port),
++               XFAILED(status) ? "FAILED" : "ok");
+   if (XFAILED(status)) {
+     XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
+     return -1;
+@@ -680,7 +705,8 @@
+ }
+ 
+ u32 NetDll_connect_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR> name, u32 namelen) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("connect", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(0));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -698,7 +724,8 @@
+ }
+ 
+ u32 NetDll_listen_entry(u32 caller, u32 socket_handle, i32 backlog) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("listen", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(0));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -716,13 +743,14 @@
+ 
+ u32 NetDll_accept_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR> addr_ptr,
+                         mapped_u32 addrlen_ptr) {
++  systemlink::TraceNetCall("accept", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(0));
+   if (!addr_ptr) {
+     // WSAEFAULT
+     XThread::SetLastError(0x271E);
+     return -1;
+   }
+ 
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -737,7 +765,7 @@
+     std::memcpy(addr_ptr->sa_data, native_addr.sa_data, *addrlen_ptr - 2);
+     *addrlen_ptr = native_len;
+ 
+-    return new_socket->handle();
++    return systemlink::SockToGuest(new_socket->handle());
+   } else {
+     return -1;
+   }
+@@ -762,7 +790,7 @@
+         break;
+       }
+       // Convert from Xenia -> native
+-      auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++      auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+       assert_not_null(socket);
+       this->sockets[i] = socket;
+     }
+@@ -772,7 +800,7 @@
+     guest_set->fd_count = 0;
+     for (uint32_t i = 0; i < this->count; ++i) {
+       auto socket = this->sockets[i];
+-      guest_set->fd_array[guest_set->fd_count++] = socket->handle();
++      guest_set->fd_array[guest_set->fd_count++] = systemlink::SockToGuest(socket->handle());
+     }
+   }
+ 
+@@ -798,6 +826,7 @@
+ i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
+                         ppc_ptr_t<x_fd_set> writefds, ppc_ptr_t<x_fd_set> exceptfds,
+                         mapped_void timeout_ptr) {
++  systemlink::TraceNetCall("select", static_cast<uint32_t>(0), static_cast<uint32_t>(0));
+   host_set host_readfds = {};
+   fd_set native_readfds = {};
+   if (readfds) {
+@@ -825,7 +854,7 @@
+                                              reinterpret_cast<int32_t*>(&timeout.tv_usec));
+     timeout_in = &timeout;
+   }
+-  int ret = select(nfds, readfds ? &native_readfds : nullptr, writefds ? &native_writefds : nullptr,
++  int ret = select(systemlink::SelectNfds(nfds), readfds ? &native_readfds : nullptr, writefds ? &native_writefds : nullptr,
+                    exceptfds ? &native_exceptfds : nullptr, timeout_in);
+   if (readfds) {
+     host_readfds.UpdateFrom(&native_readfds);
+@@ -845,7 +874,8 @@
+ }
+ 
+ u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len, u32 flags) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("recv", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(buf_len));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -857,7 +887,8 @@
+ 
+ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len,
+                           u32 flags, ppc_ptr_t<XSOCKADDR_IN> from_ptr, mapped_u32 fromlen_ptr) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("recvfrom", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(buf_len));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -869,8 +900,18 @@
+     native_from = *from_ptr;
+   }
+   uint32_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
+-  int ret =
+-      socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
++  int ret;
++  do {
++    ret = socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
++    // A console never hears its own broadcasts; skip them.
++  } while (ret >= 0 && systemlink::IsOwnPacket(native_from));
++  [[maybe_unused]] const int host_errno = errno;
++  if (ret >= 0) {
++    if (systemlink::ShouldLogPacket()) {
++      REXKRNL_INFO("SystemLink: recvfrom {:08X}:{} ({} bytes)", uint32_t(native_from.sin_addr),
++                   uint16_t(native_from.sin_port), ret);
++    }
++  }
+ 
+   if (from_ptr) {
+     from_ptr->sin_family = native_from.sin_family;
+@@ -888,7 +929,7 @@
+     uint32_t error_code = WSAGetLastError();
+     XThread::SetLastError(error_code);
+ #else
+-    XThread::SetLastError(0x0);
++    XThread::SetLastError(systemlink::HostErrorToWsa(host_errno));
+ #endif
+   }
+ 
+@@ -896,7 +937,8 @@
+ }
+ 
+ u32 NetDll_send_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len, u32 flags) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("send", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(buf_len));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -908,7 +950,8 @@
+ 
+ u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len, u32 flags,
+                         ppc_ptr_t<XSOCKADDR_IN> to_ptr, u32 to_len) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  systemlink::TraceNetCall("sendto", static_cast<uint32_t>(socket_handle), static_cast<uint32_t>(buf_len));
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+@@ -916,7 +959,11 @@
+   }
+ 
+   N_XSOCKADDR_IN native_to(to_ptr);
+-  return socket->SendTo(buf_ptr, buf_len, flags, &native_to, to_len);
++  if (systemlink::ShouldLogPacket()) {
++    REXKRNL_INFO("SystemLink: sendto {:08X}:{} ({} bytes)", uint32_t(native_to.sin_addr),
++                 uint16_t(native_to.sin_port), buf_len);
++  }
++  return systemlink::SendTo(socket.get(), buf_ptr, buf_len, flags, native_to, to_len);
+ }
+ 
+ u32 NetDll___WSAFDIsSet_entry(u32 socket_handle, ppc_ptr_t<x_fd_set> fd_set) {
+@@ -1030,25 +1077,17 @@
+ REX_EXPORT_STUB(__imp__NetDll_XHttpShutdown);
+ REX_EXPORT_STUB(__imp__NetDll_XHttpStartup);
+ REX_EXPORT_STUB(__imp__NetDll_XHttpWriteData);
+-REX_EXPORT_STUB(__imp__NetDll_XNetConnect);
+-REX_EXPORT_STUB(__imp__NetDll_XNetCreateKey);
+ REX_EXPORT_STUB(__imp__NetDll_XNetDnsReverseLookup);
+ REX_EXPORT_STUB(__imp__NetDll_XNetDnsReverseRelease);
+ REX_EXPORT_STUB(__imp__NetDll_XNetGetBroadcastVersionStatus);
+-REX_EXPORT_STUB(__imp__NetDll_XNetGetConnectStatus);
+-REX_EXPORT_STUB(__imp__NetDll_XNetGetSystemLinkPort);
+ REX_EXPORT_STUB(__imp__NetDll_XNetGetXnAddrPlatform);
+ REX_EXPORT_STUB(__imp__NetDll_XNetInAddrToServer);
+ REX_EXPORT_STUB(__imp__NetDll_XNetQosGetListenStats);
+ REX_EXPORT_STUB(__imp__NetDll_XNetQosLookup);
+-REX_EXPORT_STUB(__imp__NetDll_XNetRegisterKey);
+-REX_EXPORT_STUB(__imp__NetDll_XNetReplaceKey);
+ REX_EXPORT_STUB(__imp__NetDll_XNetServerToInAddr);
+ REX_EXPORT_STUB(__imp__NetDll_XNetSetOpt);
+ REX_EXPORT_STUB(__imp__NetDll_XNetStartupEx);
+ REX_EXPORT_STUB(__imp__NetDll_XNetTsAddrToInAddr);
+-REX_EXPORT_STUB(__imp__NetDll_XNetUnregisterInAddr);
+-REX_EXPORT_STUB(__imp__NetDll_XNetUnregisterKey);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
+@@ -1098,5 +1137,4 @@
+ REX_EXPORT_STUB(__imp__NetDll_XnpUnregisterKeyForCallerType);
+ REX_EXPORT_STUB(__imp__NetDll_XnpUpdateConfigParams);
+ REX_EXPORT_STUB(__imp__NetDll_getpeername);
+-REX_EXPORT_STUB(__imp__NetDll_getsockname);
+ REX_EXPORT_STUB(__imp__NetDll_getsockopt);
+diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
+--- a/src/system/xam/user_profile.cpp
++++ b/src/system/xam/user_profile.cpp
+@@ -14,9 +14,12 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/user_profile.h>
++
++REXCVAR_DECLARE(int32_t, systemlink_instance);
+ 
+ namespace rex {
+ namespace system {
+@@ -26,8 +29,12 @@
+   // 58410A1F checks the user XUID against a mask of 0x00C0000000000000 (3<<54),
+   // if non-zero, it prevents the user from playing the game.
+   // "You do not have permissions to perform this operation."
+-  xuid_ = 0xB13EBABEBABEBABE;
+-  name_ = "User";
++  // System Link: copies of the game that play together must not be the same player, so each
++  // instance (--systemlink_instance) counts up from the classic XUID and gets its own name.
++  // Instance 0 is unchanged, so existing saves keep working.
++  const int32_t sl_instance = REXCVAR_GET(systemlink_instance) & 0xFFFF;
++  xuid_ = 0xB13EBABEBABEBABE + static_cast<uint64_t>(sl_instance);
++  name_ = sl_instance ? fmt::format("User{}", sl_instance) : std::string("User");
+   // The launcher passes the player's chosen name here. XAM name buffers hold
+   // 16 bytes including the terminator, so keep at most 15 characters.
+   if (const char* custom = std::getenv("SOTR_USERNAME")) {
+diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
+--- a/src/kernel/CMakeLists.txt
++++ b/src/kernel/CMakeLists.txt
+@@ -14,6 +14,7 @@
+     xam/xam_locale.cpp
+     xam/xam_msg.cpp
+     xam/xam_net.cpp
++    xam/systemlink.cpp
+     xam/xam_notify.cpp
+     xam/xam_nui.cpp
+     xam/xam_party.cpp
+diff --git a/src/system/xam/app_manager.cpp b/src/system/xam/app_manager.cpp
+--- a/src/system/xam/app_manager.cpp
++++ b/src/system/xam/app_manager.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <rex/kernel/xam/systemlink.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/app_manager.h>
+ 
+@@ -31,11 +32,15 @@
+   {
+     auto it = app_lookup_.find(app_id);
+     if (it == app_lookup_.end()) {
++      kernel::xam::systemlink::TraceAppMessage(app_id, message, buffer_ptr, buffer_length,
++                                               X_E_NOTFOUND, false);
+       return X_E_NOTFOUND;
+     }
+     app = it->second;
+   }
+-  return app->DispatchMessageSync(message, buffer_ptr, buffer_length);
++  X_HRESULT result = app->DispatchMessageSync(message, buffer_ptr, buffer_length);
++  kernel::xam::systemlink::TraceAppMessage(app_id, message, buffer_ptr, buffer_length, result, true);
++  return result;
+ }
+ 
+ X_HRESULT AppManager::DispatchMessageAsync(uint32_t app_id, uint32_t message, uint32_t buffer_ptr,
+@@ -44,11 +49,15 @@
+   {
+     auto it = app_lookup_.find(app_id);
+     if (it == app_lookup_.end()) {
++      kernel::xam::systemlink::TraceAppMessage(app_id, message, buffer_ptr, buffer_length,
++                                               X_E_NOTFOUND, false);
+       return X_E_NOTFOUND;
+     }
+     app = it->second;
+   }
+-  return app->DispatchMessageSync(message, buffer_ptr, buffer_length);
++  X_HRESULT result = app->DispatchMessageSync(message, buffer_ptr, buffer_length);
++  kernel::xam::systemlink::TraceAppMessage(app_id, message, buffer_ptr, buffer_length, result, true);
++  return result;
+ }
+ 
+ }  // namespace xam

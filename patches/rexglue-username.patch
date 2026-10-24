@@ -1,0 +1,26 @@
+diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
+index a77f5e6..02f2915 100644
+--- a/src/system/xam/user_profile.cpp
++++ b/src/system/xam/user_profile.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <cstdlib>
+ #include <sstream>
+ 
+ #include <fmt/format.h>
+@@ -27,6 +28,13 @@ UserProfile::UserProfile() {
+   // "You do not have permissions to perform this operation."
+   xuid_ = 0xB13EBABEBABEBABE;
+   name_ = "User";
++  // The launcher passes the player's chosen name here. XAM name buffers hold
++  // 16 bytes including the terminator, so keep at most 15 characters.
++  if (const char* custom = std::getenv("SOTR_USERNAME")) {
++    std::string custom_name(custom);
++    if (custom_name.size() > 15) custom_name.resize(15);
++    if (!custom_name.empty()) name_ = custom_name;
++  }
+ 
+   // https://cs.rin.ru/forum/viewtopic.php?f=38&t=60668&hilit=gfwl+live&start=195
+   // https://github.com/arkem/py360/blob/master/py360/constants.py

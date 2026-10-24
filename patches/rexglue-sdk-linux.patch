@@ -1,0 +1,649 @@
+diff --git a/include/rex/graphics/vulkan/pipeline_cache.h b/include/rex/graphics/vulkan/pipeline_cache.h
+index 7b938b9..dd2608c 100644
+--- a/include/rex/graphics/vulkan/pipeline_cache.h
++++ b/include/rex/graphics/vulkan/pipeline_cache.h
+@@ -201,7 +201,7 @@ class VulkanPipelineCache {
+     PipelineRenderTarget render_targets[xenos::kMaxColorRenderTargets];
+ 
+     // Including all the padding, for a stable hash.
+-    static constexpr uint32_t kVersion = 0x20260228;
++    static constexpr uint32_t kVersion = 0x20261023;
+     PipelineDescription() {
+       Reset();
+     }
+diff --git a/include/rex/graphics/vulkan/render_target_cache.h b/include/rex/graphics/vulkan/render_target_cache.h
+index 34f7033..3788281 100644
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -809,7 +809,7 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+   // Writes contents of host render targets within rectangles from
+   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
+   bool DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+-                         uint32_t dump_pitch);
++                         uint32_t dump_pitch, RenderTarget* forced_source = nullptr);
+ 
+   bool gamma_render_target_as_unorm16_ = false;
+ 
+diff --git a/include/rex/input/sdl/sdl_input_driver.h b/include/rex/input/sdl/sdl_input_driver.h
+index cf0e3d1..4bef989 100644
+--- a/include/rex/input/sdl/sdl_input_driver.h
++++ b/include/rex/input/sdl/sdl_input_driver.h
+@@ -78,6 +78,11 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
+   std::unique_lock<std::mutex> DrainAndLock();
+   void ProcessEventLocked(const SDL_Event& event);
+   void OnControllerDeviceAddedLocked(const SDL_Event& event);
++  // Some controllers (notably Steam Input's virtual Xbox pad) are present before
++  // or without a GAMEPAD_ADDED event. Poll the gamepad list as a fallback.
++  void SyncControllersLocked();
++  bool IsControllerKnownLocked(SDL_JoystickID instance_id) const;
++  void AddControllerLocked(SDL_JoystickID instance_id);
+   void OnControllerDeviceRemovedLocked(const SDL_Event& event);
+   void OnControllerDeviceAxisMotionLocked(const SDL_Event& event);
+   void OnControllerDeviceButtonChangedLocked(const SDL_Event& event);
+@@ -95,6 +100,7 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
+   bool SDL_Gamepad_initialized_;
+   std::atomic<int> sdl_events_unflushed_;
+   std::atomic<bool> sdl_pumpevents_queued_;
++  uint64_t next_controller_sync_ms_ = 0;
+   // Appended in connection order, never re-sorted, and unbounded: the
+   // assignment decides how many the guest sees.
+   std::vector<ControllerState> controllers_;
+diff --git a/include/rex/ui/flags.h b/include/rex/ui/flags.h
+index fa2ef60..637b223 100644
+--- a/include/rex/ui/flags.h
++++ b/include/rex/ui/flags.h
+@@ -29,6 +29,7 @@ REXCVAR_DECLARE(bool, host_present_from_non_ui_thread);
+ REXCVAR_DECLARE(int32_t, window_width);
+ REXCVAR_DECLARE(int32_t, window_height);
+ REXCVAR_DECLARE(bool, fullscreen);
++REXCVAR_DECLARE(bool, borderless);
+ REXCVAR_DECLARE(int32_t, monitor);
+ REXCVAR_DECLARE(std::string, video_driver);
+ 
+diff --git a/src/core/cvar.cpp b/src/core/cvar.cpp
+index 228728d..3476cd1 100644
+--- a/src/core/cvar.cpp
++++ b/src/core/cvar.cpp
+@@ -40,19 +40,22 @@ std::atomic<bool> g_init_done = false;
+ // Recursive: FlagRegistrar chain methods re-enter; change callbacks invoked
+ // from SetFlagByName must not mutate the registry.
+ std::recursive_mutex& GetRegistryMutex() {
+-  static std::recursive_mutex m;
+-  return m;
++  // Intentionally leaked. Namespace-scope FlagRegistrar objects run their
++  // destructors during __cxa_finalize, potentially after ordinary function
++  // local statics have already been destroyed.
++  static auto* m = new std::recursive_mutex;
++  return *m;
+ }
+ 
+ // Flag registry - use functions to avoid static init order issues
+ std::vector<FlagEntry>& GetRegistryStorage() {
+-  static std::vector<FlagEntry> registry;
+-  return registry;
++  static auto* registry = new std::vector<FlagEntry>;
++  return *registry;
+ }
+ 
+ std::unordered_map<std::string, size_t>& GetRegistryIndex() {
+-  static std::unordered_map<std::string, size_t> index;
+-  return index;
++  static auto* index = new std::unordered_map<std::string, size_t>;
++  return *index;
+ }
+ 
+ // Values that arrived before their cvar was registered; runtime-loaded
+@@ -63,8 +66,8 @@ struct PendingValues {
+ };
+ 
+ std::unordered_map<std::string, PendingValues>& GetPendingValuesStorage() {
+-  static std::unordered_map<std::string, PendingValues> pending;
+-  return pending;
++  static auto* pending = new std::unordered_map<std::string, PendingValues>;
++  return *pending;
+ }
+ 
+ // Convert flag name to environment variable: gpu_vsync -> REX_GPU_VSYNC
+@@ -139,14 +142,14 @@ void ApplyTomlTable(const toml::table& table, const std::string& prefix) {
+ 
+ // todo(tomc): move restart manager to Runtime
+ std::vector<std::string>& GetPendingRestartStorage() {
+-  static std::vector<std::string> pending;
+-  return pending;
++  static auto* pending = new std::vector<std::string>;
++  return *pending;
+ }
+ 
+ // Callback storage for change notifications
+ std::unordered_map<std::string, std::vector<ChangeCallback>>& GetCallbackStorage() {
+-  static std::unordered_map<std::string, std::vector<ChangeCallback>> callbacks;
+-  return callbacks;
++  static auto* callbacks = new std::unordered_map<std::string, std::vector<ChangeCallback>>;
++  return *callbacks;
+ }
+ 
+ void MarkPendingRestart(std::string_view name) {
+diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
+index b52bf39..42cf37a 100644
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -483,6 +483,14 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+     shm_unlink(full_path.c_str());
+     return kFileMappingHandleInvalid;
+   }
++  // This mapping is private to the current process. Unlink it immediately so
++  // a crash or forced termination cannot leave its (potentially multi-GB)
++  // tmpfs object behind. The open descriptor and existing mappings keep the
++  // object alive until CloseFileMappingHandle closes the last reference.
++  if (shm_unlink(full_path.c_str()) != 0) {
++    close(ret);
++    return kFileMappingHandleInvalid;
++  }
+   return static_cast<FileMappingHandle>(ret);
+ #endif
+ }
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 41a5fda..f80f3b7 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -95,6 +95,11 @@ if(REXGLUE_USE_D3D12)
+         ${REXGPU_XENOS_DXBC_THIRDPARTY_SOURCES}
+         ${REXGPU_XENOS_DXBC_SOURCES}
+         ${REXGPU_XENOS_D3D12_SOURCES})
++else()
++    # The shared render-target/texture caches call the D3D12-only diagnostic
++    # hook RtLogActive() (d3d_screenshot.cpp). Provide a no-op on Vulkan-only
++    # builds so they link.
++    list(APPEND REXGPU_XENOS_SOURCES rt_log_stub.cpp)
+ endif()
+ 
+ add_library(rexgpu-xenos SHARED ${REXGPU_XENOS_SOURCES})
+diff --git a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+index 9ce3bb4..f8fab0e 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+@@ -1424,6 +1424,22 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+         spv::Id fetch_constant_word_4_signed =
+             builder_->createUnaryOp(spv::OpBitcast, type_int_, fetch_constant_word_4);
+ 
++        // The result exponent adjustment (`exp_adjust`) is in bits 13:18 of
++        // fetch constant word 3, alongside the swizzle. Word 4 bits 12:21 are
++        // the LOD bias, which must not be used as the exponent adjustment.
++        id_vector_temp_.clear();
++        id_vector_temp_.push_back(const_int_0_);
++        id_vector_temp_.push_back(
++            builder_->makeIntConstant(int((fetch_constant_word_0_index + 3) >> 2)));
++        id_vector_temp_.push_back(
++            builder_->makeIntConstant(int((fetch_constant_word_0_index + 3) & 3)));
++        spv::Id fetch_constant_word_3 = builder_->createLoad(
++            builder_->createAccessChain(spv::StorageClassUniform, uniform_fetch_constants_,
++                                        id_vector_temp_),
++            spv::NoPrecision);
++        spv::Id fetch_constant_word_3_signed =
++            builder_->createUnaryOp(spv::OpBitcast, type_int_, fetch_constant_word_3);
++
+         // Accumulate the explicit LOD (or LOD bias) sources (in D3D11.3
+         // specification order: specified LOD + sampler LOD bias + instruction
+         // LOD bias).
+@@ -2029,11 +2045,11 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+           }
+         }
+ 
+-        // Apply the exponent bias from the bits 13:18 of the fetch constant
+-        // word 4.
++        // Apply the exponent bias from bits 13:18 of the fetch constant word
++        // 3 (`exp_adjust`) - word 4 bits 12:21 are the LOD bias.
+         spv::Id result_exponent_bias = builder_->createBinBuiltinCall(
+             type_float_, ext_inst_glsl_std_450_, GLSLstd450Ldexp, const_float_1_,
+-            builder_->createTriOp(spv::OpBitFieldSExtract, type_int_, fetch_constant_word_4_signed,
++            builder_->createTriOp(spv::OpBitFieldSExtract, type_int_, fetch_constant_word_3_signed,
+                                   builder_->makeUintConstant(13), builder_->makeUintConstant(6)));
+         {
+           uint32_t result_remaining_components = used_result_nonzero_components;
+diff --git a/src/graphics/rt_log_stub.cpp b/src/graphics/rt_log_stub.cpp
+new file mode 100644
+index 0000000..d3a0629
+--- /dev/null
++++ b/src/graphics/rt_log_stub.cpp
+@@ -0,0 +1,14 @@
++/**
++ * Souls of the Reaper - non-D3D12 stub.
++ *
++ * The shared render-target and texture caches instrument their draw logging
++ * through rex::graphics::d3d12::RtLogActive(). The real implementation lives
++ * in d3d12/d3d_screenshot.cpp, which is only compiled for D3D12 (Windows).
++ * Vulkan-only builds link this no-op instead.
++ */
++
++namespace rex::graphics::d3d12 {
++
++bool RtLogActive() { return false; }
++
++}  // namespace rex::graphics::d3d12
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 91ac08f..9da4dcc 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -1326,15 +1326,36 @@ void VulkanPipelineCache::WritePipelineRenderTargetDescription(
+         /* 15 */ PipelineBlendFactor::kOneMinusConstantAlpha,
+         /* 16 */ PipelineBlendFactor::kSrcAlphaSaturate,
+     };
++    // Like kBlendFactorMap, but with color modes changed to alpha, matching
++    // the D3D12 backend's kBlendFactorAlphaMap.
++    static const PipelineBlendFactor kBlendFactorAlphaMap[32] = {
++        /*  0 */ PipelineBlendFactor::kZero,
++        /*  1 */ PipelineBlendFactor::kOne,
++        /*  2 */ PipelineBlendFactor::kZero,  // ?
++        /*  3 */ PipelineBlendFactor::kZero,  // ?
++        /*  4 */ PipelineBlendFactor::kSrcAlpha,
++        /*  5 */ PipelineBlendFactor::kOneMinusSrcAlpha,
++        /*  6 */ PipelineBlendFactor::kSrcAlpha,
++        /*  7 */ PipelineBlendFactor::kOneMinusSrcAlpha,
++        /*  8 */ PipelineBlendFactor::kDstAlpha,
++        /*  9 */ PipelineBlendFactor::kOneMinusDstAlpha,
++        /* 10 */ PipelineBlendFactor::kDstAlpha,
++        /* 11 */ PipelineBlendFactor::kOneMinusDstAlpha,
++        /* 12 */ PipelineBlendFactor::kConstantColor,
++        /* 13 */ PipelineBlendFactor::kOneMinusConstantColor,
++        /* 14 */ PipelineBlendFactor::kConstantAlpha,
++        /* 15 */ PipelineBlendFactor::kOneMinusConstantAlpha,
++        /* 16 */ PipelineBlendFactor::kSrcAlphaSaturate,
++    };
+     render_target_out.src_color_blend_factor =
+         kBlendFactorMap[uint32_t(blend_control.color_srcblend)];
+     render_target_out.dst_color_blend_factor =
+         kBlendFactorMap[uint32_t(blend_control.color_destblend)];
+     render_target_out.color_blend_op = blend_control.color_comb_fcn;
+     render_target_out.src_alpha_blend_factor =
+-        kBlendFactorMap[uint32_t(blend_control.alpha_srcblend)];
++        kBlendFactorAlphaMap[uint32_t(blend_control.alpha_srcblend)];
+     render_target_out.dst_alpha_blend_factor =
+-        kBlendFactorMap[uint32_t(blend_control.alpha_destblend)];
++        kBlendFactorAlphaMap[uint32_t(blend_control.alpha_destblend)];
+     render_target_out.alpha_blend_op = blend_control.alpha_comb_fcn;
+     if (!command_processor_.GetVulkanDevice()->properties().constantAlphaColorBlendFactors) {
+       if (blend_control.color_srcblend == xenos::BlendFactor::kConstantAlpha) {
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+index 0298f06..aed2a39 100644
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -1150,6 +1150,10 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+   const VkDevice device = vulkan_device->device();
+   DeferredCommandBuffer& command_buffer = command_processor_.deferred_command_buffer();
+ 
++  // Tell GetResolveCopyRectanglesToDump which ownership map to read
++  // in mode 5 (separate color/depth maps).
++  SetCurrentResolveIsDepth(resolve_info.IsCopyingDepth());
++
+   // Copying.
+   bool copied = false;
+   if (resolve_info.copy_dest_extent_length) {
+@@ -1164,7 +1168,18 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+           draw_util::resolve_copy_shader_info[size_t(copy_shader)];
+       bool direct_resolved = false;
+       if (GetPath() == Path::kHostRenderTargets) {
+-        if (REXCVAR_GET(direct_host_resolve)) {
++        // Mode 4: read the scene-color render target directly. The
++        // guest reuses EDRAM base 0x040C as both the lit-scene color composite
++        // and a depth buffer in the same frame; with separate host textures the
++        // composite's color survives in its own render target, but the EDRAM
++        // ownership map interleaves color/depth owners (1-tile-row offset) and a
++        // normal resolve reads the wrong owner in bands. Dump the color render
++        // target that was drawn directly for the whole span instead.
++        RenderTarget* forced_color_source = nullptr;
++        if (REXCVAR_GET(rtv_color_depth_ownership_mode) == 4) {
++          forced_color_source = GetExistingColorResolveSource(resolve_info);
++        }
++        if (!forced_color_source && REXCVAR_GET(direct_host_resolve)) {
+           direct_resolved =
+               TryResolveCopyDirectly(resolve_info, copy_shader, draw_resolution_scaled);
+           if (direct_resolved) {
+@@ -1175,13 +1190,14 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+         }
+         if (!direct_resolved) {
+           // Dump the current contents of the render targets owning the affected
+-          // range to edram_buffer_.
++          // range to edram_buffer_ (or the forced color source for mode 4).
+           uint32_t dump_base;
+           uint32_t dump_row_length_used;
+           uint32_t dump_rows;
+           uint32_t dump_pitch;
+           resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+-          if (!DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch)) {
++          if (!DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch,
++                                 forced_color_source)) {
+             REXGPU_ERROR("VulkanRenderTargetCache: Failed to dump host render targets for resolve");
+             return false;
+           }
+@@ -6020,11 +6036,30 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInf
+ }
+ 
+ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
+-                                                uint32_t dump_rows, uint32_t dump_pitch) {
++                                                uint32_t dump_rows, uint32_t dump_pitch,
++                                                RenderTarget* forced_source) {
+   assert_true(GetPath() == Path::kHostRenderTargets);
+ 
++  // [s19 mode 8 v4] A color resolve reads EDRAM without claiming it, so run the
++  // cross-map clear inheritance for the dumped span before reading - Diablo
++  // III's ground-light atlas is sometimes resolved right after the aliased
++  // D24S8 alpha clear with no color draw in between, leaving the draw-claim
++  // inheritance of mode 8 never triggered and the dumped alpha stale (black
++  // floor). No-op when a draw already inherited.
++  if (!forced_source) {
++    RenderTarget* xmap_render_targets[4];
++    std::vector<Transfer> xmap_transfers[4];
++    uint32_t xmap_render_target_count = GetResolveCrossMapTransfers(
++        dump_base, dump_row_length_used, dump_rows, dump_pitch, 4, xmap_render_targets,
++        xmap_transfers);
++    if (xmap_render_target_count) {
++      PerformTransfersAndResolveClears(xmap_render_target_count, xmap_render_targets,
++                                       xmap_transfers);
++    }
++  }
++
+   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows, dump_pitch,
+-                                 dump_rectangles_);
++                                 dump_rectangles_, forced_source);
+   if (dump_rectangles_.empty()) {
+     return true;
+   }
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index c7c440d..4db1ba1 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -417,6 +417,10 @@ std::unique_lock<std::mutex> SDLInputDriver::DrainAndLock() {
+   for (const auto& event : events) {
+     ProcessEventLocked(event);
+   }
++  // Pads that already existed when SDL initialized, or that Steam Input creates
++  // without a GAMEPAD_ADDED event, are found here. Throttled to avoid calling
++  // into SDL on every input poll.
++  SyncControllersLocked();
+   return guard;
+ }
+ 
+@@ -441,9 +445,26 @@ void SDLInputDriver::ProcessEventLocked(const SDL_Event& event) {
+ }
+ 
+ void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
+-  const auto controller = SDL_OpenGamepad(event.gdevice.which);
++  AddControllerLocked(event.gdevice.which);
++}
++
++bool SDLInputDriver::IsControllerKnownLocked(SDL_JoystickID instance_id) const {
++  for (const auto& controller : controllers_) {
++    if (controller.sdl &&
++        SDL_GetJoystickID(SDL_GetGamepadJoystick(controller.sdl)) == instance_id) {
++      return true;
++    }
++  }
++  return false;
++}
++
++void SDLInputDriver::AddControllerLocked(SDL_JoystickID instance_id) {
++  if (IsControllerKnownLocked(instance_id)) {
++    return;
++  }
++  const auto controller = SDL_OpenGamepad(instance_id);
+   if (!controller) {
+-    assert_always();
++    REXLOG_WARN("SDL: Failed to open gamepad {}: {}", instance_id, SDL_GetError());
+     return;
+   }
+   REXLOG_INFO(
+@@ -474,6 +495,26 @@ void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
+               static_cast<uint64_t>(state.id));
+ }
+ 
++void SDLInputDriver::SyncControllersLocked() {
++  if (!SDL_Gamepad_initialized_) {
++    return;
++  }
++  const uint64_t now_ms = SDL_GetTicks();
++  if (now_ms < next_controller_sync_ms_) {
++    return;
++  }
++  next_controller_sync_ms_ = now_ms + 250;
++  int gamepad_count = 0;
++  SDL_JoystickID* gamepad_ids = SDL_GetGamepads(&gamepad_count);
++  if (!gamepad_ids) {
++    return;
++  }
++  for (int i = 0; i < gamepad_count; ++i) {
++    AddControllerLocked(gamepad_ids[i]);
++  }
++  SDL_free(gamepad_ids);
++}
++
+ void SDLInputDriver::OnControllerDeviceRemovedLocked(const SDL_Event& event) {
+   auto idx = GetControllerIndexFromInstanceID(event.gdevice.which);
+   if (!idx) {
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index 607f951..a2a21d7 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -105,6 +105,14 @@ bool ReXApp::OnInitialize() {
+ bool ReXApp::SetupEnvironment() {
+   auto exe_dir = rex::filesystem::GetExecutableFolder();
+ 
++  const auto config_path = exe_dir / (std::string(GetName()) + ".toml");
++
++  // Load the config before resolving the data paths, otherwise a
++  // game_data_root set in diablo3.toml would be read too late to matter.
++  // CLI and environment overrides were applied earlier and still win.
++  if (std::filesystem::exists(config_path))
++    rex::cvar::LoadConfig(config_path);
++
+   std::filesystem::path game_dir;
+   std::string game_data_cvar = REXCVAR_GET(game_data_root);
+   if (!game_data_cvar.empty()) {
+@@ -143,7 +151,7 @@ bool ReXApp::SetupEnvironment() {
+   }
+ 
+   PathConfig path_config{game_dir,  user_dir,     update_dir,
+-                         cache_dir, metadata_dir, exe_dir / (std::string(GetName()) + ".toml")};
++                         cache_dir, metadata_dir, config_path};
+   OnConfigurePaths(path_config);
+   game_data_root_ = path_config.game_data_root;
+   user_data_root_ = path_config.user_data_root;
+@@ -153,10 +161,6 @@ bool ReXApp::SetupEnvironment() {
+   config_path_ = path_config.config_path;
+   resolved_defaults_ = std::move(path_config);
+ 
+-  // Load config FIRST so log cvars have final values
+-  if (std::filesystem::exists(config_path_))
+-    rex::cvar::LoadConfig(config_path_);
+-
+   // Late-phase logging
+   std::string log_file_cvar = REXCVAR_GET(log_file);
+   std::string log_level_str = REXCVAR_GET(log_level);
+diff --git a/src/ui/window.cpp b/src/ui/window.cpp
+index b4e045f..3e37444 100644
+--- a/src/ui/window.cpp
++++ b/src/ui/window.cpp
+@@ -36,6 +36,10 @@ REXCVAR_DEFINE_INT32(window_height, 0, "UI/Window",
+ // in sync whenever this cvar is changed at runtime.
+ REXCVAR_DEFINE_BOOL(fullscreen, true, "UI/Window", "Start the window in fullscreen mode");
+ 
++REXCVAR_DEFINE_BOOL(borderless, false, "UI/Window",
++                    "Remove window decorations and place the window at the top-left corner")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ REXCVAR_DEFINE_INT32(monitor, 0, "UI/Window",
+                      "Monitor index to display on (0 = default, 1 = primary, 2 = "
+                      "second monitor, etc.)")
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index 2251429..5eeea32 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -136,13 +136,20 @@ WindowSDL::~WindowSDL() {
+ bool WindowSDL::OpenImpl() {
+   // SDL window coordinates are physical pixels on Windows and X11. Cocoa
+   // uses logical points and applies the backing scale itself.
+-  SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN;
++  SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN;
++  if (IsFullscreen() || !REXCVAR_GET(borderless)) {
++    flags |= SDL_WINDOW_RESIZABLE;
++  }
++  if (REXCVAR_GET(borderless) && !IsFullscreen()) {
++    flags |= SDL_WINDOW_BORDERLESS;
++  }
+ #if REX_PLATFORM_MAC
+   int initial_width = int(GetDesiredLogicalWidth());
+   int initial_height = int(GetDesiredLogicalHeight());
+ #else
+-  int initial_width = int(SizeToPhysical(GetDesiredLogicalWidth()));
+-  int initial_height = int(SizeToPhysical(GetDesiredLogicalHeight()));
++  // resolution/window_width are physical pixels on X11 and Windows.
++  int initial_width = int(GetDesiredLogicalWidth());
++  int initial_height = int(GetDesiredLogicalHeight());
+ #endif
+   sdl_window_ = SDL_CreateWindow(GetTitle().c_str(), initial_width, initial_height, flags);
+   if (!sdl_window_) {
+@@ -170,6 +177,10 @@ bool WindowSDL::OpenImpl() {
+     }
+   }
+ 
++  if (!IsFullscreen() && REXCVAR_GET(borderless)) {
++    SDL_SetWindowPosition(sdl_window_, 0, 0);
++  }
++
+   if (IsFullscreen()) {
+     // Borderless desktop fullscreen (a NULL display mode is SDL3's default).
+     SDL_SetWindowFullscreen(sdl_window_, true);
+@@ -185,6 +196,14 @@ bool WindowSDL::OpenImpl() {
+   ApplyCursorVisibilityNow();
+   SDL_ShowWindow(sdl_window_);
+ 
++  if (!IsFullscreen() && REXCVAR_GET(borderless)) {
++    // Some window managers maximize borderless resizable windows. Keep the
++    // requested native client size and top-left position instead.
++    SDL_RestoreWindow(sdl_window_);
++    SDL_SetWindowResizable(sdl_window_, false);
++    SDL_SetWindowPosition(sdl_window_, 0, 0);
++  }
++
+   // Actualize state for the common Window code. Listener dispatch is handled
+   // by Window::Open after OpenImpl returns; these only record initial state.
+   int pixel_width = 0;
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 7bd264b..dc63002 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -1,6 +1,8 @@
+ # Unit Tests for ReXGlue core components
+ 
+ add_executable(unit_tests
++    main.cpp
++    graphics/texture_fetch_constant_test.cpp
+     test_memory.cpp
+     memory/heap_allocation_test.cpp
+     kernel/object_table_test.cpp
+@@ -35,7 +37,7 @@ target_include_directories(unit_tests PRIVATE
+ target_link_libraries(unit_tests PRIVATE
+     rexcodegen
+     rexruntime
+-    Catch2::Catch2WithMain
++    Catch2::Catch2
+ )
+ 
+ # ReXApp is shipped as source for recomp projects, rather than compiled into
+@@ -67,11 +69,14 @@ if(UNIX AND NOT APPLE)
+     )
+ endif()
+ 
+-# Discover tests
+-include(Catch)
+-catch_discover_tests(unit_tests
+-    TEST_PREFIX "unit."
+-    PROPERTIES
+-        LABELS "unit"
+-        TIMEOUT 60
+-)
++# Test discovery runs the runtime-linked binary at build time; runtime logging
++# writes to stdout and corrupts Catch2's JSON discovery output, so tests are
++# invoked directly instead. Build the target, then run
++# rexglue-sdk/out/linux-amd64/unit_tests with an optional test-name filter.
++# include(Catch)
++# catch_discover_tests(unit_tests
++#     TEST_PREFIX "unit."
++#     PROPERTIES
++#         LABELS "unit"
++#         TIMEOUT 60
++# )
+diff --git a/tests/unit/graphics/texture_fetch_constant_test.cpp b/tests/unit/graphics/texture_fetch_constant_test.cpp
+new file mode 100644
+index 0000000..b2fa5aa
+--- /dev/null
++++ b/tests/unit/graphics/texture_fetch_constant_test.cpp
+@@ -0,0 +1,40 @@
++/**
++ * @file        tests/unit/graphics/texture_fetch_constant_test.cpp
++ * @brief       Texture fetch constant field layout regression tests
++ *
++ * @copyright   Copyright (c) 2026 Tom Clay <tomc@tctechstuff.com>
++ *              All rights reserved.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include <catch2/catch_test_macros.hpp>
++#include <rex/graphics/xenos.h>
++
++namespace xenos = rex::graphics::xenos;
++
++// The Vulkan SPIR-V fetch translator applies the sampled value exponent bias
++// (`exp_adjust`) from bits 13:18 of fetch constant word 3. Word 4 bits 13:18
++// are the upper bits of the LOD bias and must not be used as the exponent
++// adjustment - doing so scales every texture sample by a power of two and was
++// the cause of the Diablo III menu font alpha loss and the black scene.
++TEST_CASE("Texture fetch exp_adjust is separate from LOD bias", "[graphics][texture]") {
++  // Diablo III menu font atlas fetch constant (base 0x10F07, k_8, tiled).
++  xenos::xe_gpu_texture_fetch_t fetch = {};
++  fetch.dword_3 = 0x00000248;  // num_format 0, swizzle 0x124, exp_adjust 0
++  fetch.dword_4 = 0x003F4000;  // lod_bias -12 (1/32 units)
++
++  CHECK(fetch.swizzle == 0x124);
++  CHECK(fetch.exp_adjust == 0);
++  CHECK(fetch.lod_bias == -12);
++
++  // D3D12's translator uses word 3, bits 13:18 for the result exponent bias.
++  const auto extract_exp_adjust = [](uint32_t word) {
++    return int32_t(word << 13) >> 26;
++  };
++  CHECK(extract_exp_adjust(fetch.dword_3) == 0);
++  // Word 4 bits 13:18 contain the high part of lod_bias (here -6), which must
++  // never be applied as a result scale.
++  CHECK(extract_exp_adjust(fetch.dword_4) == -6);
++}
+diff --git a/tests/unit/main.cpp b/tests/unit/main.cpp
+new file mode 100644
+index 0000000..4974c00
+--- /dev/null
++++ b/tests/unit/main.cpp
+@@ -0,0 +1,23 @@
++/**
++ * @file        tests/unit/main.cpp
++ * @brief       Unit test entry point
++ *
++ * @copyright   Copyright (c) 2026 Tom Clay <tomc@tctechstuff.com>
++ *              All rights reserved.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include <catch2/catch_session.hpp>
++
++#include <cstdlib>
++
++// The runtime's static teardown is not safe to run after the test session
++// (some global registries are destroyed twice through the test link). Exit
++// directly once Catch2 has reported the result - this also keeps
++// catch_discover_tests' `--list-tests` invocation from crashing.
++int main(int argc, char** argv) {
++  const int result = Catch::Session().run(argc, argv);
++  std::_Exit(result);
++}

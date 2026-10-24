@@ -1,0 +1,201 @@
+diff --git a/include/rex/codegen/function_graph.h b/include/rex/codegen/function_graph.h
+index c64271b..e6a669e 100644
+--- a/include/rex/codegen/function_graph.h
++++ b/include/rex/codegen/function_graph.h
+@@ -57,7 +57,7 @@ class FunctionGraph {
+   // Notifies all PENDING functions to try resolution against the new entry.
+   // hasXrefs: true if this is a known call target (bl target, etc.)
+   FunctionNode* addFunction(uint32_t base, uint32_t size, FunctionAuthority authority,
+-                            bool hasXrefs = false);
++                            bool hasXrefs = false, bool notifyPending = true);
+ 
+   // Add a named function to the graph (convenience overload)
+   FunctionNode* addFunction(uint32_t base, uint32_t size, FunctionAuthority authority,
+@@ -91,6 +91,7 @@ class FunctionGraph {
+ 
+   // Get all PENDING functions
+   std::vector<FunctionNode*> getPendingFunctions();
++  void notifyPendingFunctions(FunctionNode* added, const std::vector<FunctionNode*>& pending);
+ 
+   // Get all SEALED functions
+   std::vector<FunctionNode*> getSealedFunctions();
+@@ -99,6 +100,7 @@ class FunctionGraph {
+   size_t functionCount() const { return functions_.size(); }
+   size_t pendingCount() const;
+   size_t sealedCount() const;
++  std::vector<uint32_t> findAbsorbedGapFunctions() const;
+ 
+   //=========================================================================
+   // Function Setup (called during Discover phase)
+diff --git a/src/codegen/function_graph.cpp b/src/codegen/function_graph.cpp
+index fc918bb..ff92219 100644
+--- a/src/codegen/function_graph.cpp
++++ b/src/codegen/function_graph.cpp
+@@ -734,7 +734,7 @@ void FunctionGraph::updateFunctionCodePointers() {
+ //=============================================================================
+ 
+ FunctionNode* FunctionGraph::addFunction(uint32_t base, uint32_t size, FunctionAuthority authority,
+-                                         bool hasXrefs) {
++                                         bool hasXrefs, bool notifyPending) {
+   // Check for existing function at this address
+   auto it = functions_.find(base);
+   if (it != functions_.end()) {
+@@ -763,7 +763,9 @@ FunctionNode* FunctionGraph::addFunction(uint32_t base, uint32_t size, FunctionA
+   functionHasXrefs_[base] = hasXrefs;
+ 
+   // Notify all PENDING functions
+-  notifyFunctionAdded(nodePtr);
++  if (notifyPending) {
++    notifyFunctionAdded(nodePtr);
++  }
+ 
+   return nodePtr;
+ }
+@@ -1291,4 +1293,54 @@ void FunctionGraph::notifyFunctionAdded(FunctionNode* newFunction) {
+   }
+ }
+ 
++void FunctionGraph::notifyPendingFunctions(FunctionNode* added,
++                                           const std::vector<FunctionNode*>& pending) {
++  for (auto* node : pending) {
++    if (node != added && node->isPending()) {
++      node->tryResolveAgainst(added);
++    }
++  }
++}
++
++std::vector<uint32_t> FunctionGraph::findAbsorbedGapFunctions() const {
++  struct Range { uint32_t start, end, owner; };
++  std::vector<Range> protectedRanges, gapRanges;
++  for (const auto& [base, node] : functions_) {
++    auto& ranges = node->authority() == FunctionAuthority::GAP_FILL ? gapRanges : protectedRanges;
++    auto addRange = [&](uint32_t start, uint32_t end) {
++      start = std::max(start, base);
++      end = std::min(end, base + node->size());
++      if (start < end) ranges.push_back({start, end, base});
++    };
++    if (node->blocks().empty() || node->authority() == FunctionAuthority::CONFIG ||
++        node->authority() == FunctionAuthority::PDATA) {
++      addRange(base, base + node->size());
++    } else {
++      for (const auto& block : node->blocks()) addRange(block.base, block.base + block.size);
++    }
++  }
++  auto byStart = [](const Range& a, const Range& b) { return a.start < b.start; };
++  std::sort(protectedRanges.begin(), protectedRanges.end(), byStart);
++  std::sort(gapRanges.begin(), gapRanges.end(), byStart);
++  size_t protectedIndex = 0, gapIndex = 0;
++  uint32_t protectedEnd = 0, gapEnd = 0;
++  std::vector<uint32_t> absorbed;
++  // The base index is ordered, so prefix maxima answer containment queries.
++  for (const auto& [base, node] : functionsByBase_) {
++    if (node->authority() != FunctionAuthority::GAP_FILL) continue;
++    while (protectedIndex < protectedRanges.size() && protectedRanges[protectedIndex].start <= base)
++      protectedEnd = std::max(protectedEnd, protectedRanges[protectedIndex++].end);
++    uint32_t ownEnd = 0;
++    while (gapIndex < gapRanges.size() && gapRanges[gapIndex].start <= base) {
++      const auto& range = gapRanges[gapIndex++];
++      if (range.owner < base) gapEnd = std::max(gapEnd, range.end);
++      else ownEnd = std::max(ownEnd, range.end);
++    }
++    if (protectedEnd > base || gapEnd > base) absorbed.push_back(base);
++    // A gap never absorbs itself; its ranges apply only to later entrypoints.
++    gapEnd = std::max(gapEnd, ownEnd);
++  }
++  return absorbed;
++}
++
+ }  // namespace rex::codegen
+diff --git a/src/codegen/phase_gapfill.cpp b/src/codegen/phase_gapfill.cpp
+index f3da777..4b77f69 100644
+--- a/src/codegen/phase_gapfill.cpp
++++ b/src/codegen/phase_gapfill.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include "ppc/instruction.h"
+ 
++#include <algorithm>
+ #include <unordered_set>
+ 
+ #include <rex/codegen/phases.h>
+@@ -134,6 +135,10 @@ void gapFillCodeRegions(CodegenContext& ctx) {
+ 
+   size_t gapsFound = 0;
+   size_t segmentsCreated = 0;
++  // No node becomes pending during this registration batch. Capture only
++  // existing pending nodes, rather than scanning the entire graph per insert.
++  auto pendingFunctions = graph.getPendingFunctions();
++  std::erase_if(pendingFunctions, [](const auto* node) { return !node->hasUnresolvedJumps(); });
+ 
+   for (const auto& region : scan.codeRegions) {
+     // Split region on terminators (blr, tail calls), then check each segment
+@@ -154,7 +159,9 @@ void gapFillCodeRegions(CodegenContext& ctx) {
+         continue;
+ 
+       uint32_t segmentSize = segment.size();
+-      graph.addFunction(segment.start, segmentSize, FunctionAuthority::GAP_FILL, false);
++      auto* added = graph.addFunction(segment.start, segmentSize, FunctionAuthority::GAP_FILL,
++                                      false, false);
++      graph.notifyPendingFunctions(added, pendingFunctions);
+ 
+       REXCODEGEN_TRACE("GapFill: registered sub_{:08X} (0x{:08X}-0x{:08X}, {} bytes)",
+                        segment.start, segment.start, segment.end, segmentSize);
+@@ -178,30 +185,7 @@ void gapFillCodeRegions(CodegenContext& ctx) {
+ 
+ void cleanupAbsorbedGapFills(CodegenContext& ctx) {
+   auto& graph = ctx.graph;
+-  std::vector<uint32_t> toRemove;
+-
+-  for (const auto& [addr, node] : graph.functions()) {
+-    if (node->authority() != FunctionAuthority::GAP_FILL)
+-      continue;
+-
+-    for (const auto& [otherAddr, otherNode] : graph.functions()) {
+-      if (otherAddr == addr)
+-        continue;
+-      if (!otherNode->containsAddress(addr))
+-        continue;
+-
+-      // This GAP_FILL is inside another function's blocks
+-      if (otherNode->authority() != FunctionAuthority::GAP_FILL) {
+-        // Absorbed by higher authority - remove
+-        toRemove.push_back(addr);
+-        break;
+-      } else if (otherAddr < addr) {
+-        // Both GAP_FILL, other has lower address - it survives
+-        toRemove.push_back(addr);
+-        break;
+-      }
+-    }
+-  }
++  const auto toRemove = graph.findAbsorbedGapFunctions();
+ 
+   for (uint32_t addr : toRemove) {
+     graph.removeFunction(addr);
+diff --git a/src/codegen/phase_register.cpp b/src/codegen/phase_register.cpp
+index 7d1fa44..0a1252f 100644
+--- a/src/codegen/phase_register.cpp
++++ b/src/codegen/phase_register.cpp
+@@ -589,6 +589,13 @@ VoidResult registerEntryPoints(CodegenContext& ctx) {
+   auto* entries = reinterpret_cast<const IMAGE_CE_RUNTIME_FUNCTION*>(pdataData);
+ 
+   size_t pdataAdded = 0;
++  bool notifyPending = false;
++  for (const auto& [address, node] : graph.functions()) {
++    if (node->isPending() && node->hasUnresolvedJumps()) {
++      notifyPending = true;
++      break;
++    }
++  }
+   for (size_t i = 0; i < count; i++) {
+     uint32_t beginAddr = byte_swap(entries[i].BeginAddress);
+     uint32_t data = byte_swap(entries[i].Data);
+@@ -645,7 +652,7 @@ VoidResult registerEntryPoints(CodegenContext& ctx) {
+       }
+     }
+ 
+-    graph.addFunction(beginAddr, size, FunctionAuthority::PDATA, true);
++    graph.addFunction(beginAddr, size, FunctionAuthority::PDATA, true, notifyPending);
+     graph.setFunctionHasExceptionHandler(beginAddr, fn.ExceptionFlag);
+ 
+     if (exInfo && exInfo->info.hasInfo()) {

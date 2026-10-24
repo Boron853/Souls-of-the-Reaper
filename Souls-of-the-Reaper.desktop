@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Souls of the Reaper
+Comment=Diablo III: Reaper of Souls Linux port
+Exec=/home/grimesc/Projects/Souls-of-the-Reaper/launch-diablo3.sh
+Path=/home/grimesc/Projects/Souls-of-the-Reaper
+Icon=applications-games
+Terminal=false
+StartupNotify=true
+Categories=Game;

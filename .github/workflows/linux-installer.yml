@@ -1,0 +1,131 @@
+name: Linux installer package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "linux-beta-*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Build pinned SDK and package installer
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git ninja-build pkg-config python3 python3-pip \
+            software-properties-common lsb-release \
+            libgtk-3-dev libx11-xcb-dev libxss-dev libxtst-dev \
+            libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
+            libxfixes-dev libwayland-dev libwayland-bin \
+            libdecor-0-dev libvulkan-dev libasound2-dev libpulse-dev \
+            libpipewire-0.3-dev libudev-dev libglvnd-dev python3-tk \
+            wget ca-certificates gnupg rsync
+
+          # Match the upstream SDK Linux toolchain: Clang 20 plus GCC 13's
+          # libstdc++ headers. Jammy's default libstdc++ lacks chrono features
+          # used by the SDK.
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 20
+          sudo apt-get install -y --no-install-recommends clang-20 lld-20
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-13
+          sudo ln -sf /usr/bin/clang-20 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/clang++-20 /usr/local/bin/clang++
+
+          # The SDK requires CMake >= 3.25; the distro package is too old.
+          python3 -m pip install --user "cmake==3.31.6"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the pinned ReXGlue SDK
+        run: |
+          set -euxo pipefail
+          SDK_COMMIT=$(python3 -c 'import json; print(json.load(open("port/rexglue.lock.json"))["commit"])')
+          git clone --filter=blob:none https://github.com/rexglue/rexglue-sdk.git rexglue-sdk
+          git -C rexglue-sdk checkout --detach "$SDK_COMMIT"
+          git -C rexglue-sdk submodule update --init --recursive
+          REXSDK_DIR="$PWD/rexglue-sdk" \
+            REXSDK_INSTALL="$PWD/rexglue-sdk/out/install/linux-amd64" \
+            ./port/build_sdk.sh -j "$(nproc)"
+
+      - name: Package the SDK bundle
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          ./port/package_sdk.sh \
+            "$PWD/rexglue-sdk" \
+            "$PWD/dist/rexglue-sdk-linux-amd64.tar.gz"
+
+      - name: Verify the SDK bundle
+        run: |
+          set -euxo pipefail
+          test -s dist/rexglue-sdk-linux-amd64.tar.gz
+          test -s dist/rexglue-sdk-linux-amd64.tar.gz.sha256
+          rm -rf /tmp/sdk-check
+          mkdir -p /tmp/sdk-check
+          tar -xzf dist/rexglue-sdk-linux-amd64.tar.gz -C /tmp/sdk-check
+          test -x /tmp/sdk-check/rexglue-sdk/install/bin/rexglue
+          LD_LIBRARY_PATH="/tmp/sdk-check/rexglue-sdk/install/lib64:/tmp/sdk-check/rexglue-sdk/install/lib" \
+            /tmp/sdk-check/rexglue-sdk/install/bin/rexglue --version
+
+      - name: Package the installer tree
+        run: |
+          set -euxo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          PKG="dist/SoulsOfTheReaper-linux-installer-${TAG}"
+          rm -rf "$PKG"
+          mkdir -p "$PKG/sdk"
+          git archive --format=tar HEAD | tar -x -C "$PKG"
+          cp dist/rexglue-sdk-linux-amd64.tar.gz "$PKG/sdk/"
+          cp dist/rexglue-sdk-linux-amd64.tar.gz.sha256 "$PKG/sdk/"
+          python3 -m py_compile "$PKG/port/install_game.py" "$PKG/installer/iso_installer.py"
+          tar -czf "${PKG}.tar.gz" -C dist "$(basename "$PKG")"
+          sha256sum dist/rexglue-sdk-linux-amd64.tar.gz "${PKG}.tar.gz" > dist/SHA256SUMS
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-installer-and-sdk
+          path: |
+            dist/rexglue-sdk-linux-amd64.tar.gz
+            dist/rexglue-sdk-linux-amd64.tar.gz.sha256
+            dist/SoulsOfTheReaper-linux-installer-*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Attach assets to a tagged release
+        if: startsWith(github.ref, 'refs/tags/linux-beta-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          TAG="$GITHUB_REF_NAME"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "Linux ${TAG#linux-}" \
+              --notes "Automated Linux installer and pinned ReXGlue SDK bundle." \
+              --prerelease
+          fi
+          gh release upload "$TAG" \
+            dist/rexglue-sdk-linux-amd64.tar.gz \
+            dist/rexglue-sdk-linux-amd64.tar.gz.sha256 \
+            dist/SoulsOfTheReaper-linux-installer-*.tar.gz \
+            dist/SHA256SUMS \
+            --clobber

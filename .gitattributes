@@ -1,0 +1,4 @@
+# Patches are applied with git apply to an SDK checked out with LF endings, so they must
+# stay LF whatever core.autocrlf the contributor has.
+*.patch text eol=lf
+patches/*.cpp text eol=lf

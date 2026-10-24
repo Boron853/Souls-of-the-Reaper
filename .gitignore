@@ -5,6 +5,10 @@ D3_Portable/
 # ReXGlue SDK - clone separately and apply patches/ (see README)
 rexglue-sdk/
 sdk-bin/
+sdk/
+# Installer-managed pinned SDK checkout (used when rexglue-sdk/ is absent or
+# at a different revision)
+.install/
 
 # Build outputs
 port/out/
@@ -75,6 +79,10 @@ port/rdc_play.ps1
 *.7z
 FABLE_AQUI.md
 
+# Python bytecode from the Linux helper scripts
+__pycache__/
+*.pyc
+
 # Local-only files
 reference/
 .claude/
@@ -83,3 +91,6 @@ HANDOFF_*.md
 video_script.md
 IDIOMAS_Y_REGIONES.md
 cosas por hacer.txt
+
+# Codegen manifest written by port/build.ps1 for your game folder
+port/local_manifest.toml

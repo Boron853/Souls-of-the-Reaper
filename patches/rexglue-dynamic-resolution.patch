@@ -1,0 +1,422 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e432..6ecb6b0 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -245,6 +245,11 @@ class CommandProcessor {
+ 
+   uint32_t counter_ = 0;
+ 
++  // Timestamp (steady clock, nanoseconds) when the previous swap finished
++  // pacing. The backend can use this to estimate the amount of work done since
++  // the last paced swap without including the frame-limiter sleep.
++  int64_t last_swap_pace_end_ns_ = 0;
++
+   uint32_t primary_buffer_ptr_ = 0;
+   uint32_t primary_buffer_size_ = 0;
+ 
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+index 696ff48..93ae987 100644
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -14,6 +14,7 @@
+ #include <climits>
+ #include <cstdint>
+ #include <deque>
++#include <filesystem>
+ #include <functional>
+ #include <memory>
+ #include <string>
+@@ -279,6 +280,16 @@ class VulkanCommandProcessor : public CommandProcessor {
+     uint32_t bind_count;
+   };
+ 
++  // Dynamic draw resolution scaling. The draw resolution scale is fixed for
++  // the lifetime of the texture / render target / pipeline caches because it
++  // affects texture allocation, render target sizes, and translated shaders.
++  // A change therefore requires recreating those caches at a safe swap point.
++  void EvaluateDynamicResolution();
++  void RequestDrawResolutionScale(uint32_t scale);
++  bool ApplyPendingDrawResolutionScale();
++  bool ReinitializeDrawResolutionCaches(uint32_t scale_x, uint32_t scale_y);
++  void UpdateSharedMemoryAndEdramDescriptorSet();
++
+   union TextureDescriptorSetLayoutKey {
+     uint32_t key;
+     struct {
+@@ -615,6 +626,31 @@ class VulkanCommandProcessor : public CommandProcessor {
+ 
+   std::unique_ptr<VulkanTextureCache> texture_cache_;
+ 
++  // Needed to recreate the render target cache when the draw resolution scale
++  // changes.
++  uint32_t shared_memory_binding_count_ = 0;
++
++  // Shader storage settings are applied to the pipeline cache, which is
++  // replaced when the draw resolution scale changes.
++  bool shader_storage_initialized_ = false;
++  std::filesystem::path shader_storage_cache_root_;
++  uint32_t shader_storage_title_id_ = 0;
++  bool shader_storage_blocking_ = false;
++
++  // Dynamic draw resolution state. The scale is the configured maximum until
++  // the first measurement, then adjusted between the configured minimum and
++  // maximum.
++  bool dynamic_resolution_initialized_ = false;
++  uint32_t dynamic_resolution_current_scale_ = 1;
++  uint32_t dynamic_resolution_min_scale_ = 1;
++  uint32_t dynamic_resolution_max_scale_ = 1;
++  uint32_t dynamic_resolution_pending_scale_ = 1;
++  bool dynamic_resolution_change_pending_ = false;
++  int64_t dynamic_resolution_sample_sum_ns_ = 0;
++  uint32_t dynamic_resolution_sample_count_ = 0;
++  int64_t dynamic_resolution_last_change_ns_ = 0;
++  int64_t dynamic_resolution_upscale_block_until_ns_ = 0;
++
+   VkDescriptorPool shared_memory_and_edram_descriptor_pool_ = VK_NULL_HANDLE;
+   VkDescriptorSet shared_memory_and_edram_descriptor_set_;
+ 
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index e69de90..5256a22 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -1037,6 +1037,9 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+     } else {
+       s_next_ns = 0;  // reset so a later re-enable resyncs cleanly
+     }
++    // The backend can use this timestamp to measure actual rendering work
++    // without the pacing sleep included in the frame interval.
++    last_swap_pace_end_ns_ = t;
+ 
+     // Frame-time histogram over a ~5s window.
+     static int64_t s_prev_ns = 0, s_win_ns = 0, s_sum_us = 0, s_min_us = 0, s_max_us = 0;
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..b12a9d7 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <chrono>
+ #include <cstdint>
+ #include <cstring>
+ #include <iterator>
+@@ -69,6 +70,14 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
+                     "device (falls back to render passes otherwise)")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++REXCVAR_DEFINE_BOOL(d3_dynamic_resolution, false, "GPU",
++                    "Automatically reduce the draw resolution scale to maintain a target frame "
++                    "rate, and raise it again when there is enough headroom");
++REXCVAR_DEFINE_INT32(d3_dynamic_resolution_target_fps, 60, "GPU",
++                     "Target frame rate for d3_dynamic_resolution (0 = 60)");
++REXCVAR_DEFINE_INT32(d3_dynamic_resolution_min_scale, 1, "GPU",
++                     "Lowest draw resolution scale used by d3_dynamic_resolution");
++
+ namespace rex::graphics::vulkan {
+ 
+ namespace {
+@@ -642,8 +651,14 @@ void VulkanCommandProcessor::InvalidateVertexBufferResidencyRange(uint32_t first
+ 
+ void VulkanCommandProcessor::InitializeShaderStorage(const std::filesystem::path& cache_root,
+                                                      uint32_t title_id, bool blocking) {
++  shader_storage_initialized_ = true;
++  shader_storage_cache_root_ = cache_root;
++  shader_storage_title_id_ = title_id;
++  shader_storage_blocking_ = blocking;
+   CommandProcessor::InitializeShaderStorage(cache_root, title_id, blocking);
+-  pipeline_cache_->InitializeShaderStorage(cache_root, title_id, blocking);
++  if (pipeline_cache_) {
++    pipeline_cache_->InitializeShaderStorage(cache_root, title_id, blocking);
++  }
+ }
+ 
+ bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+@@ -908,6 +923,7 @@ bool VulkanCommandProcessor::SetupContext() {
+       SpirvShaderTranslator::GetSharedMemoryStorageBufferCountLog2(
+           device_properties.maxStorageBufferRange);
+   uint32_t shared_memory_binding_count = UINT32_C(1) << shared_memory_binding_count_log2;
++  shared_memory_binding_count_ = shared_memory_binding_count;
+ 
+   uint32_t draw_resolution_scale_x, draw_resolution_scale_y;
+   bool draw_resolution_scale_not_clamped =
+@@ -918,6 +934,17 @@ bool VulkanCommandProcessor::SetupContext() {
+         "emulator, reducing to {}x{}",
+         draw_resolution_scale_x, draw_resolution_scale_y);
+   }
++  const uint32_t configured_max_scale =
++      std::min(draw_resolution_scale_x, draw_resolution_scale_y);
++  const uint32_t configured_min_scale =
++      std::clamp<int32_t>(REXCVAR_GET(d3_dynamic_resolution_min_scale), 1,
++                          int32_t(configured_max_scale));
++  if (REXCVAR_GET(d3_dynamic_resolution) && draw_resolution_scale_x != draw_resolution_scale_y) {
++    // The caches are recreated with equal axes at runtime, so start in the
++    // state the dynamic controller can actually maintain.
++    draw_resolution_scale_x = configured_max_scale;
++    draw_resolution_scale_y = configured_max_scale;
++  }
+   if (draw_resolution_scale_x > 1 || draw_resolution_scale_y > 1) {
+     REXGPU_WARN(
+         "Vulkan draw resolution scaling is experimental and may not affect all "
+@@ -1024,6 +1051,29 @@ bool VulkanCommandProcessor::SetupContext() {
+     return false;
+   }
+ 
++  // Dynamic draw resolution scaling starts at the configured maximum scale.
++  // The Vulkan implementation requires both axes to use the same scale because
++  // textures and render targets are recreated as a pair.
++  dynamic_resolution_max_scale_ = configured_max_scale;
++  dynamic_resolution_min_scale_ = configured_min_scale;
++  dynamic_resolution_current_scale_ = std::min(draw_resolution_scale_x, draw_resolution_scale_y);
++  dynamic_resolution_pending_scale_ = dynamic_resolution_current_scale_;
++  dynamic_resolution_initialized_ = true;
++  if (draw_resolution_scale_x != draw_resolution_scale_y) {
++    REXGPU_WARN(
++        "Dynamic resolution requires equal draw_resolution_scale_x and "
++        "draw_resolution_scale_y; using {}x",
++        dynamic_resolution_max_scale_);
++  }
++  if (REXCVAR_GET(d3_dynamic_resolution)) {
++    REXGPU_INFO(
++        "D3 dynamic resolution enabled: scale {}..{}, target {} FPS",
++        dynamic_resolution_min_scale_, dynamic_resolution_max_scale_,
++        REXCVAR_GET(d3_dynamic_resolution_target_fps) > 0
++            ? REXCVAR_GET(d3_dynamic_resolution_target_fps)
++            : 60);
++  }
++
+   // Shared memory and EDRAM common bindings.
+   VkDescriptorPoolSize descriptor_pool_sizes[1];
+   descriptor_pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+@@ -2272,6 +2322,32 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
+ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                        uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
++
++  // Estimate rendering work since the previous paced swap. The base command
++  // processor records the time after its frame-limiter sleep, so the limiter
++  // itself does not look like rendering headroom.
++  {
++    using namespace std::chrono;
++    const int64_t now_ns =
++        duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
++    if (dynamic_resolution_initialized_ && last_swap_pace_end_ns_ > 0) {
++      const int64_t work_ns = now_ns - last_swap_pace_end_ns_;
++      if (work_ns > 0 && work_ns < 500000000LL) {
++        dynamic_resolution_sample_sum_ns_ += work_ns;
++        ++dynamic_resolution_sample_count_;
++        if (dynamic_resolution_sample_count_ >= 30) {
++          EvaluateDynamicResolution();
++          dynamic_resolution_sample_sum_ns_ = 0;
++          dynamic_resolution_sample_count_ = 0;
++        }
++      } else {
++        // Loading screen, breakpoint, or another long stall - start over.
++        dynamic_resolution_sample_sum_ns_ = 0;
++        dynamic_resolution_sample_count_ = 0;
++      }
++    }
++  }
++
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ 
+@@ -2927,6 +3003,198 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+   // End the frame even if did not present for any reason (the image refresher
+   // was not called), to prevent leaking per-frame resources.
+   EndSubmission(true);
++
++  // Apply a scale change only after the frame has been submitted and all
++  // caches are idle. The base command processor's limiter runs after this, so
++  // the reinitialization hitch is included in the next frame's pacing.
++  ApplyPendingDrawResolutionScale();
++}
++
++void VulkanCommandProcessor::EvaluateDynamicResolution() {
++  if (!REXCVAR_GET(d3_dynamic_resolution) || !dynamic_resolution_initialized_ ||
++      dynamic_resolution_change_pending_ ||
++      dynamic_resolution_max_scale_ <= dynamic_resolution_min_scale_) {
++    return;
++  }
++  if (!dynamic_resolution_sample_count_) {
++    return;
++  }
++
++  int32_t target_fps = REXCVAR_GET(d3_dynamic_resolution_target_fps);
++  if (target_fps <= 0) {
++    target_fps = 60;
++  }
++  const int64_t budget_ns = int64_t(1000000000LL) / target_fps;
++  const int64_t average_ns =
++      dynamic_resolution_sample_sum_ns_ / int64_t(dynamic_resolution_sample_count_);
++  using namespace std::chrono;
++  const int64_t now_ns =
++      duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
++  constexpr int64_t kMinChangeIntervalNs = 1500000000LL;
++  if (dynamic_resolution_last_change_ns_ &&
++      now_ns - dynamic_resolution_last_change_ns_ < kMinChangeIntervalNs) {
++    return;
++  }
++
++  // Downscale when the measured work exceeds the frame budget by 10% for a
++  // sustained window. The scale change itself is applied at the swap boundary.
++  if (average_ns > budget_ns + budget_ns / 10 &&
++      dynamic_resolution_current_scale_ > dynamic_resolution_min_scale_) {
++    RequestDrawResolutionScale(dynamic_resolution_current_scale_ - 1);
++    dynamic_resolution_last_change_ns_ = now_ns;
++    // Avoid immediately probing the scale that just failed.
++    dynamic_resolution_upscale_block_until_ns_ = now_ns + 30000000000LL;
++    return;
++  }
++
++  // Upscale only when the current work is comfortably below the budget and the
++  // projected cost of the next scale still fits. This prevents the common
++  // 720p-at-105-FPS -> 1440p-at-34-FPS oscillation on GPUs that cannot sustain
++  // the higher scale.
++  if (average_ns < budget_ns * 3 / 4 &&
++      dynamic_resolution_current_scale_ < dynamic_resolution_max_scale_ &&
++      dynamic_resolution_upscale_block_until_ns_ <= now_ns &&
++      (!dynamic_resolution_last_change_ns_ ||
++       now_ns - dynamic_resolution_last_change_ns_ >= 5000000000LL)) {
++    const uint64_t current_scale = dynamic_resolution_current_scale_;
++    const uint64_t next_scale = current_scale + 1;
++    const double area_ratio =
++        double(next_scale * next_scale) / double(current_scale * current_scale);
++    if (double(average_ns) * area_ratio <= double(budget_ns) * 0.9) {
++      RequestDrawResolutionScale(dynamic_resolution_current_scale_ + 1);
++      dynamic_resolution_last_change_ns_ = now_ns;
++    }
++  }
++}
++
++void VulkanCommandProcessor::RequestDrawResolutionScale(uint32_t scale) {
++  if (scale < dynamic_resolution_min_scale_ || scale > dynamic_resolution_max_scale_ ||
++      scale == dynamic_resolution_current_scale_ || dynamic_resolution_change_pending_) {
++    return;
++  }
++  dynamic_resolution_pending_scale_ = scale;
++  dynamic_resolution_change_pending_ = true;
++  REXGPU_INFO("[D3 dynamic resolution] scale {}x -> {}x requested",
++              dynamic_resolution_current_scale_, scale);
++}
++
++bool VulkanCommandProcessor::ApplyPendingDrawResolutionScale() {
++  if (!dynamic_resolution_change_pending_) {
++    return true;
++  }
++  if (!REXCVAR_GET(d3_dynamic_resolution) || !dynamic_resolution_initialized_) {
++    dynamic_resolution_change_pending_ = false;
++    return true;
++  }
++  if (submission_open_ || frame_open_) {
++    return false;
++  }
++  if (dynamic_resolution_pending_scale_ == dynamic_resolution_current_scale_) {
++    dynamic_resolution_change_pending_ = false;
++    return true;
++  }
++  if (!AwaitAllQueueOperationsCompletion()) {
++    return false;
++  }
++
++  const uint32_t new_scale = dynamic_resolution_pending_scale_;
++  if (!ReinitializeDrawResolutionCaches(new_scale, new_scale)) {
++    REXGPU_ERROR("[D3 dynamic resolution] Failed to switch to {}x; disabling", new_scale);
++    dynamic_resolution_change_pending_ = false;
++    dynamic_resolution_initialized_ = false;
++    return false;
++  }
++
++  dynamic_resolution_current_scale_ = new_scale;
++  dynamic_resolution_pending_scale_ = new_scale;
++  dynamic_resolution_change_pending_ = false;
++  dynamic_resolution_sample_sum_ns_ = 0;
++  dynamic_resolution_sample_count_ = 0;
++  REXGPU_INFO("[D3 dynamic resolution] scale {}x active", new_scale);
++  return true;
++}
++
++bool VulkanCommandProcessor::ReinitializeDrawResolutionCaches(uint32_t scale_x,
++                                                             uint32_t scale_y) {
++  if (!register_file_ || !shared_memory_ || !shared_memory_binding_count_) {
++    return false;
++  }
++
++  // The pipeline cache references the render target cache and the texture cache
++  // keeps guest textures; all three contain state derived from the scale.
++  texture_cache_.reset();
++  pipeline_cache_.reset();
++  render_target_cache_.reset();
++  ClearTransientDescriptorPools();
++
++  std::unique_ptr<VulkanRenderTargetCache> new_render_target_cache =
++      std::make_unique<VulkanRenderTargetCache>(*register_file_, *memory_, scale_x, scale_y, *this);
++  if (!new_render_target_cache->Initialize(shared_memory_binding_count_)) {
++    REXGPU_ERROR("[D3 dynamic resolution] Failed to initialize render target cache at {}x", scale_x);
++    return false;
++  }
++
++  std::unique_ptr<VulkanPipelineCache> new_pipeline_cache =
++      std::make_unique<VulkanPipelineCache>(*this, *register_file_, *new_render_target_cache,
++                                            guest_shader_vertex_stages_);
++  if (!new_pipeline_cache->Initialize()) {
++    REXGPU_ERROR("[D3 dynamic resolution] Failed to initialize pipeline cache at {}x", scale_x);
++    return false;
++  }
++  if (shader_storage_initialized_) {
++    new_pipeline_cache->InitializeShaderStorage(shader_storage_cache_root_,
++                                                shader_storage_title_id_,
++                                                shader_storage_blocking_);
++  }
++
++  std::unique_ptr<VulkanTextureCache> new_texture_cache = VulkanTextureCache::Create(
++      *register_file_, *shared_memory_, scale_x, scale_y, *this, guest_shader_pipeline_stages_);
++  if (!new_texture_cache) {
++    REXGPU_ERROR("[D3 dynamic resolution] Failed to initialize texture cache at {}x", scale_x);
++    return false;
++  }
++
++  render_target_cache_ = std::move(new_render_target_cache);
++  pipeline_cache_ = std::move(new_pipeline_cache);
++  texture_cache_ = std::move(new_texture_cache);
++
++  // The EDRAM storage buffer belongs to the render target cache.
++  UpdateSharedMemoryAndEdramDescriptorSet();
++
++  // The next submission resets these, but clear them explicitly so a stale
++  // handle cannot be observed if a swap is skipped.
++  current_render_pass_ = VK_NULL_HANDLE;
++  current_framebuffer_ = nullptr;
++  in_render_pass_ = false;
++  current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
++  current_external_graphics_pipeline_ = VK_NULL_HANDLE;
++  current_external_compute_pipeline_ = VK_NULL_HANDLE;
++  current_guest_graphics_pipeline_layout_ = nullptr;
++  deferred_command_buffer_.Reset();
++  return true;
++}
++
++void VulkanCommandProcessor::UpdateSharedMemoryAndEdramDescriptorSet() {
++  if (!render_target_cache_ ||
++      render_target_cache_->GetPath() != RenderTargetCache::Path::kPixelShaderInterlock ||
++      shared_memory_and_edram_descriptor_set_ == VK_NULL_HANDLE) {
++    return;
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  VkDescriptorBufferInfo edram_descriptor_buffer_info;
++  edram_descriptor_buffer_info.buffer = render_target_cache_->edram_buffer();
++  edram_descriptor_buffer_info.offset = 0;
++  edram_descriptor_buffer_info.range = VK_WHOLE_SIZE;
++  VkWriteDescriptorSet write_descriptor_set_edram{};
++  write_descriptor_set_edram.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++  write_descriptor_set_edram.dstSet = shared_memory_and_edram_descriptor_set_;
++  write_descriptor_set_edram.dstBinding = 1;
++  write_descriptor_set_edram.dstArrayElement = 0;
++  write_descriptor_set_edram.descriptorCount = 1;
++  write_descriptor_set_edram.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
++  write_descriptor_set_edram.pBufferInfo = &edram_descriptor_buffer_info;
++  dfn.vkUpdateDescriptorSets(vulkan_device->device(), 1, &write_descriptor_set_edram, 0, nullptr);
+ }
+ 
+ bool VulkanCommandProcessor::PushBufferMemoryBarrier(

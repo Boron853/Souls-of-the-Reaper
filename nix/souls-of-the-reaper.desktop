@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Souls of the Reaper
+Comment=Install and play the Diablo III: Reaper of Souls Linux port
+Exec=souls-of-the-reaper play
+Icon=applications-games
+Terminal=false
+StartupNotify=true
+Categories=Game;
+Keywords=Diablo;Reaper;Souls;ARPG;
