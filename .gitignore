@@ -2,7 +2,7 @@
 game/
 D3_Portable/
 
-# ReXGlue SDK - clone separately and apply patches/ (see README)
+# ReXGlue SDK - cloned and built under tools/ by scripts/build_*.py (see README)
 rexglue-sdk/
 
 # Build outputs

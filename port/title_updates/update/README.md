@@ -28,9 +28,10 @@ Saves stay separate either way.
 
 ## Linux build and launch
 
-Stage the extracted update into a separate disc directory containing the patched
-executable and all four update CPKs, using the staging command below. The
-original disc and TU package remain intact. `applied-update-manifest.json` records input and
+Stage the update with the staging command below. By default this creates the
+`game/update/` overlay described above; a separate disc directory (the older
+layout) is also supported, and the examples below use one. The original disc and
+update package remain intact. `applied-update-manifest.json` records input and
 output hashes and verified source compatibility.
 
 Build and run from the Souls of the Reaper repository:
@@ -50,9 +51,11 @@ generated sources are in `port/generated/update`. The launcher's default
 user-data directory is `$XDG_DATA_HOME/souls-of-the-reaper-update` or
 `~/.local/share/souls-of-the-reaper-update`; `--state-dir` can override it.
 Both launch modes verify the executable hash to prevent using one build with
-the other executable. Update files are already merged into the staged disc. The launcher mounts that
-folder as both `game:` and `update:` so the guest can find the patch CPKs. The
-staged folder contains no XEXP, so the executable is not patched a second time.
+the other executable. With the overlay layout, `game/` is the game root and
+`game/update` is mounted as `update:`. With the older full-copy layout, update
+files are already merged into the staged disc, and the launcher mounts that
+folder as both `game:` and `update:` so the guest can find the patch CPKs. Either
+way the staged folder contains no XEXP, so the executable is not patched a second time.
 
 Keyboard input and F11 work through the shared application/SDK controls.
 Mouse input remains opt-in with `--mnk_mouse=true`. Add `--extra-features` to the launch command for the Video
@@ -61,7 +64,7 @@ The code is built into the normal `linux-amd64-update-relwithdebinfo/diablo3` un
 `port/out/build`; `--no-extra-features` at build time produces
 `linux-amd64-update-plain-relwithdebinfo` without it. Both use the same update user-data directory. See the
 [extra-feature audit](extra-features-audit.json) and
-[feature documentation](../../extra-features.md). Windows builds use the shared update codegen and hooks; native Windows validation is pending.
+[feature documentation](../../extra-features.md). Windows builds use the shared update codegen and hooks.
 
 ## Reproduce staging
 
@@ -121,10 +124,7 @@ at `0x82517CB4`, resolving the analyzer's backward-branch validation failure.
 
 Source compatibility, the patched executable, and all four update CPK hashes are
 verified by the tooling, and the regression tests cover source-signature
-rejection and relocated hook patching. Full gameplay and save/load behavior have
-not been systematically validated. Runtime checks used an existing external
-investigation SDK with the Linux keyboard patch; a fresh minimal SDK build has
-not been tested with the update. Native Windows build/runtime testing is pending.
+rejection and relocated hook patching.
 
 ## Windows and shared configuration
 
@@ -142,5 +142,5 @@ pwsh -File scripts/run_windows.ps1 -TitleUpdate usa -ExtraFeatures -GameDir C:/g
 ```
 
 update binaries and default save directories remain separate from base
-builds on both platforms. Native Windows build/runtime testing is pending.
+builds on both platforms.
 

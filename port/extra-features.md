@@ -119,7 +119,7 @@ with `--extra-features`. For direct
 CMake builds, enable both `SOULS_TITLE_UPDATE` and `SOULS_ENABLE_EXTRA_FEATURES`
 and set `SOULS_BASE_XEX` to the patched update `Default.xex`. Its required SHA-256 is
 `447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f`.
-Windows The title update uses the same shared codegen and hooks; Windows build/runtime validation is pending.
+On Windows the title update uses the same shared codegen and hooks.
 
 ## Saved settings and game behavior
 
@@ -172,8 +172,7 @@ On Windows, use `run_windows.ps1 -ExtraFeatures -WindowMode Windowed` or
 with `--pc_use_saved_window_mode=false --fullscreen=true` (or `false`).
 
 Headless tests cover both selector labels and counts, changes, failed-save
-rollback, invalid indices, persistence, and Linux launch overrides. Desktop
-switching and Windows runtime validation remain pending.
+rollback, invalid indices, persistence, and Linux launch overrides.
 
 ## Base-disc address audit
 

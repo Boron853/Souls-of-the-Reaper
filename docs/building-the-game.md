@@ -12,7 +12,7 @@ Every step is skipped when its output already exists, so an interrupted build ca
 
 ## Inputs
 
-- **Disc image**: USA Ultimate Evil Edition (`.iso`). Or an already-extracted folder holding `Default.xex` and `CPKs/` (the filename must be exactly `Default.xex`).
+- **Disc image**: USA Ultimate Evil Edition (`.iso`). Or an already-extracted folder holding `Default.xex` and `CPKs/` (the filename must be exactly `Default.xex`), passed as `--game-dir` instead of `--iso`.
 - **Title update** (optional): the USA update package.
 
 ## Windows
@@ -30,7 +30,7 @@ Every step is skipped when its output already exists, so an interrupted build ca
 ### One command (from the disc image)
 
 ```powershell
-python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\title-update
+python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\title-update-package
 ```
 
 Drop `--title-update` for a base-only build. `--variants base,update,base-plain,update-plain` selects which executables to compile (`-plain` omits the optional PC features). `--check` validates inputs and lists the remaining steps without building.
@@ -51,7 +51,7 @@ python scripts\build_windows.py --build-sdk --game-dir game
 
 Output: `port\out\build\win-amd64-relwithdebinfo\diablo3.exe`
 
-The SDK is patched with `patches/common/*` and `patches/windows/*`. The Direct3D 12 and Vulkan renderers are compiled into the same executable and chosen at launch.
+The SDK is patched with `patches/common/*`, `patches/systemlink/*` and `patches/windows/*`. The Direct3D 12 and Vulkan renderers are compiled into the same executable and chosen at launch.
 
 ### Run
 
@@ -72,7 +72,7 @@ Useful flags: `-Backend vulkan` (default is Direct3D 12), `-VulkanPath fsi|host`
 
 Use `--cmake /path/to/cmake` if CMake is not on `PATH`. The CPU baseline is x86-64-v2.
 
-`python3 scripts/build_client.py --print-sdk-status` reports whether the SDK is `missing`, `stale` or `current`. After a build the SDK install folder holds `.sotr-sdk.json` (pinned commit and a hash of `patches/`); when either changes, the SDK counts as `stale` and the next build rebuilds it. An SDK reused with `--sdk-prefix` is trusted as given. The graphical launcher builds with the same script and keeps fetched sources in the per-user data folder when it is not in a checkout.
+`python3 scripts/build_client.py --print-sdk-status` reports whether the SDK is `missing`, `stale` or `current`. After a build the SDK install folder holds `.sotr-sdk.json` (pinned commit and a hash of the patch folders for this host); when either changes, the SDK counts as `stale` and the next build rebuilds it. An SDK reused with `--sdk-prefix` is trusted as given. The graphical launcher builds with the same script and keeps fetched sources in the per-user data folder when it is not in a checkout.
 
 ### One command (from the disc image)
 

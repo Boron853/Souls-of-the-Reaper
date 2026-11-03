@@ -533,7 +533,7 @@ class BuildClientTests(unittest.TestCase):
         values = dict(iso=None, title_update=None, variants=["base"], data_only=False,
                       game_dir=self.root / "game", game_dir_update=self.root / "game-update",
                       sdk_source=self.root / "sdk", sdk_prefix=self.root / "prefix", patcher=None,
-                      cmake="cmake", jobs=2, regenerate=False)
+                      cmake="cmake", jobs=2, regenerate=False, no_sdk_download=False)
         values.update(overrides)
         return argparse.Namespace(**values)
 
@@ -581,7 +581,7 @@ class BuildClientTests(unittest.TestCase):
             with self.assertRaisesRegex(build_client.BuildError, "move it aside"):
                 build_client.plan(self.args(variants=["update"], title_update=self.root / "tu"))
             (self.root / "game-update").rmdir()
-            with self.assertRaisesRegex(build_client.BuildError, "Title Update 2 package"):
+            with self.assertRaisesRegex(build_client.BuildError, "Title Update package"):
                 build_client.plan(self.args(variants=["update"]))
 
     def test_finished_steps_are_skipped_and_codegen_is_reused(self):

@@ -16,7 +16,7 @@ Download the latest release from the [Releases](../../releases) page, extract th
 
 Detailed guides live in [`docs/`](docs/README.md): [building the game](docs/building-the-game.md) and [building the launcher](docs/building-the-launcher.md).
 
-On Linux, one command builds everything from your own disc image (and,
+On Linux or Windows, one command builds everything from your own disc image (and,
 optionally, the USA Title Update package). The launcher's Build panel runs the same script:
 
 ```sh
@@ -88,11 +88,11 @@ Build panel when given the ISO and title update.
 
 **1b. Build the title update (optional)**
 
-To also build the USA Title Update executable, pass the extracted update package
+To also build the USA Title Update executable, pass the USA Title Update package
 to the one-command build, which extracts the disc, stages the update
 as a small overlay in `game\update\` and compiles every selected build:
 ```powershell
-python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\title-update
+python scripts\build_client.py --iso C:\path\to\disc.iso --title-update C:\path\to\title-update-package
 ```
 
 If `game\` is already extracted and the overlay is staged, build just the update executable with
@@ -174,9 +174,9 @@ Keyboard and up to 4 gamepads all work at once — whoever presses/types first a
 
 ### Hand patches to generated code (re-apply after every codegen)
 
-The generated code needs two game-specific fixes after codegen. Both build scripts apply them automatically to `port/generated/base/` (`scripts/apply_generated_patches.py`):
+The generated code needs two game-specific fixes after codegen. Both build scripts apply them automatically to `port/generated/base/` (and `port/generated/update/` for title update builds) (`scripts/apply_generated_patches.py`):
 
-- **setjmp/longjmp fix** (`sub_831583B0` / `sub_83158680`) — the recompiler mistranslates the guest setjmp/longjmp pair, corrupting Lua's protected-call mechanism and crashing the GC on startup. Replaced with host `ppc_setjmp`/`ppc_longjmp`.
+- **setjmp/longjmp fix** (`sub_831583B0` / `sub_83158680`) — the recompiler mistranslates the guest setjmp/longjmp pair, corrupting Lua's protected-call mechanism and crashing the GC on startup. Direct setjmp calls are expanded inline at each call site (`D3_GUEST_SETJMP`, `port/src/guest_jump.h`) and longjmp uses host `ppc_longjmp`. The title update build patches the matching update-build functions.
 - **Main-menu exit fix** (`sub_82632E00`) — redirects the game's "leave session, return to title screen" routine (reached from the main-menu B → confirm dialog → A/Aceptar flow) to close the game instead, like a normal PC game's Exit option.
 
   On Linux the close is queued on the UI thread. SDL closes synchronously;

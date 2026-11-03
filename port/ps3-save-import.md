@@ -5,6 +5,24 @@ Souls save and can produce a separate state directory for the Xbox update build.
 It uses only Python's standard library. Imported gameplay and save/reload
 compatibility have not been validated.
 
+> **Not everything is imported.** This is an early, partial importer. Treat the
+> result as a starting point, not a faithful copy of your PS3 save.
+>
+> | Imported (bytes copied unchanged) | Not imported or not handled |
+> | --- | --- |
+> | Account data (`account.dat`) | `HEROES.IDX` (used only to validate, not copied) |
+> | Profile data (`profile.dat`) | Preferences (`PREFS.DAT`) |
+> | Hero files (`heroes/<id>.dat`) | Platform metadata (`PARAM.SFO`, `PARAM.PFD`, `ICON0.PNG`) |
+> | | Xbox content header (none is created) |
+> | | Saves from other versions or editions (only account version 108 and hero/digest version 905) |
+> | | Physical-console exports with extra protection (not decrypted) |
+>
+> Imported data is copied as-is, with no conversion of platform-specific values, so
+> some of it may not load or behave correctly in the Xbox update build. Character
+> selection, inventory and equipment, stash, currency, quests, progression and
+> hardcore status have not been confirmed to carry over. It works only with the
+> update build, and only in one direction (PS3 to this port, never back).
+
 ## Inspect without writing
 
 ```sh
