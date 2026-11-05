@@ -171,8 +171,8 @@ On Windows, use `run_windows.ps1 -ExtraFeatures -WindowMode Windowed` or
 `-WindowMode Borderless`. Direct executable launches can override the preference
 with `--pc_use_saved_window_mode=false --fullscreen=true` (or `false`).
 
-Headless tests cover both selector labels and counts, changes, failed-save
-rollback, invalid indices, persistence, and Linux launch overrides.
+Tests cover window-mode persistence (invalid values, failed saves) and Linux
+launch overrides. The selector hooks themselves have no automated test.
 
 ## Base-disc address audit
 
@@ -244,19 +244,44 @@ another build means adding a profile with the same names; no C++ changes.
 To generate a candidate profile for a new executable from a verified one:
 
 ```sh
-python3 scripts/find_feature_addresses.py --reference update \
+python3 scripts/find_feature_addresses.py --reference update-usa \
   --reference-xex game/update/Default.xex --target-xex /path/to/new/Default.xex --id mybuild
 ```
 
-It decodes both executables (`d3-image`, built from `scripts/d3-patch`), finds
-each function by its masked instruction body, and re-derives data addresses
-from the same code. Entries that are not a unique body match are flagged
-(`weak`, `ambiguous`, `unresolved`) and must be checked by hand. Run
+It decodes both executables with `d3-image` from `scripts/d3-patch`
+(`build_client.py` configures `tools/d3-patch` but builds only `d3-patch`; run
+`cmake --build tools/d3-patch --target d3-image`, or pass `--d3-image`). It
+finds each function by its masked instruction body, and re-derives data
+addresses from the same code. Entries that are not a unique body match are
+flagged (`weak`, `ambiguous`, `unresolved`) and must be checked by hand. Run
 `--sign <id> --target-xex <xex>` to refresh a profile's runtime signatures.
-Reproducing the audited update profile from the base disc is part of the test
-suite. At runtime the hooks check each profile function's leading
-instructions in guest memory and disable the extras (with a log warning) on a
-mismatch; the log reports how many signatures were verified.
+Generating `update-usa` from the base disc, `base` from the update, and each
+profile from its own executable reproduces the checked-in addresses and
+signatures. This was checked by hand against the real executables; there is no
+automated test for it, because it needs the disc and update.
+
+At runtime the hooks compare each profile function's 12-word `signature` with
+guest memory, and disable the extras (with a log warning) on a mismatch; the log
+reports how many signatures were verified. Words are masked the same way in
+`find_feature_addresses.py` (`mask_word`) and `pc_features.cpp` (`MaskWord`).
+Branch targets and D/DS-form displacements and immediates are masked; `li`
+constants and the `ld`/`ldu`/`lwa`, `std`/`stdu` sub-opcode are kept. The window
+always covers 12 words, even past a `blr`. Short functions therefore also
+check the code that follows them; it is the same in both builds:
+
+- `resolve_label` and `selector_control` are entries in a 44-entry
+  `li r4,N; b handler` stub table. Their `li` values (4 and 56) and the next
+  five entries tell them apart.
+- `string_c_str` is `lwz r3,4(r3); blr`, with an identical accessor right after
+  it. The masked `lwz` offset cannot be kept, because the same opcode is the
+  low half of `lis`/`lwz` address pairs.
+- `string_destroy` is a single `b` to the destructor body plus one padding
+  word. The rest of its window is the prologue of the next function.
+
+On their own, the words of `resolve_label` match 18 places in the executable,
+those of `string_c_str` 3,888 and those of `string_destroy` 12,671. With the
+full window, each of the four signatures matches once.
+
 [`extra-features-audit.json`](title_updates/update/extra-features-audit.json)
 records the instruction-context matches, corroborating generated call sites,
 and the unchanged descriptor/control layouts.
@@ -286,24 +311,6 @@ command-line precedence, custom user-data directories and normal-build
 isolation. The native logic test requires a C++23 compiler. Desktop visual checks and a relaunch at a newly saved scale remain to be
 verified.
 
-An SDK integration test verifies applying the saved scale after GPU cvar
-registration, explicit override handling and invalid-setting fallback. It needs
-an installed SDK, but no disc, generated guest code or graphics device:
-
-```sh
-cmake -S tests/sdk -B port/out/tests/pc-startup -DCMAKE_PREFIX_PATH=/path/to/sdk
-cmake --build port/out/tests/pc-startup
-ctest --test-dir port/out/tests/pc-startup --output-on-failure
-```
-
-When the platform's generated PPC header is available, this project also builds
-a headless guest-hook test. It checks the three selector choices, `1x`/`2x`/`3x`
-labels, preservation of the returned guest context, delegation for existing
-options, and bounds checks for the active descriptor using simulated helpers.
-
-The same CMake test project supports the Windows SDK. Native Windows
-compilation and desktop visual checks require a Windows development machine.
-
-To run those SDK tests against update generated hooks, configure a separate test
-build with `-DSOULS_TEST_TITLE_UPDATE_2=ON`. Both variants test the version suffix
-and English autosave wording in addition to selector behavior.
+There is no SDK integration test or headless guest-hook test. The guest hooks in
+`pc_features.cpp` (selector, version suffix, autosave wording, runtime signature
+check) run only inside the game, for the base disc and the update alike.

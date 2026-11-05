@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <cstdint>
+#include <string>
 
 REXCVAR_DEFINE_BOOL(
     extra_features, false, "PC features",
@@ -102,9 +103,13 @@ void ApplySavedRenderScale(const std::filesystem::path &user_data_root) {
   if (!scale)
     return;
   const auto value = std::to_string(scale);
+  // The shared resolution_scale too: when it is set (diablo3.toml, command
+  // line) it overrides every axis left at its default, so a saved 1x would
+  // otherwise lose to resolution_scale = 2.
+  const bool shared = rex::cvar::SetFlagByName("resolution_scale", value);
   const bool x = rex::cvar::SetFlagByName("draw_resolution_scale_x", value);
   const bool y = rex::cvar::SetFlagByName("draw_resolution_scale_y", value);
-  if (x && y)
+  if (shared && x && y)
     REXLOG_INFO("PC settings: applying saved render resolution {}x", scale);
   else
     REXLOG_ERROR("PC settings: unable to apply saved render resolution");

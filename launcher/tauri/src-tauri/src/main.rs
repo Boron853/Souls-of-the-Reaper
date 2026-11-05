@@ -13,7 +13,10 @@ use std::{
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard, PoisonError,
+    },
     time::{Duration, Instant},
 };
 use tauri::{Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
@@ -33,14 +36,102 @@ struct Host {
     /// Where a launcher outside a checkout fetches the sources for its own
     /// commit; None when that commit cannot be fetched.
     managed: Option<PathBuf>,
-    /// Process id of the running scripts/build_client.py.
-    build_pid: Mutex<Option<u32>>,
+    /// The build or tool install that is running, if any.
+    job: JobSlot,
 }
 
 impl Host {
     /// Folder the build scripts run from: the checkout, else the fetched sources.
     fn build_root(&self) -> Option<PathBuf> {
         self.repo.clone().or_else(|| self.managed.clone())
+    }
+}
+
+const CANCELLED: &str = "Build cancelled. Run it again to continue where it stopped.";
+
+/// What the Build panel runs. There is one at a time: start_build and
+/// install_tools claim the slot before their first check, so a second click
+/// is turned away before it fetches or starts anything.
+#[derive(Debug, Default)]
+enum Job {
+    #[default]
+    Idle,
+    /// A build: checking tools and fetching sources until `pid` is set, then
+    /// scripts/build_client.py. Cancel sets `cancel`, which also stops a fetch
+    /// and keeps the script from starting.
+    Build { cancel: Arc<AtomicBool>, pid: Option<u32> },
+    /// winget and the installers it starts, which are not stopped halfway.
+    Install,
+}
+
+#[derive(Debug, Default)]
+struct JobSlot(Mutex<Job>);
+
+/// A claimed slot. Dropping it frees the slot, so every exit path of the
+/// command that holds it (errors and `?` included) does.
+struct Claim<'a> {
+    slot: &'a JobSlot,
+    cancel: Arc<AtomicBool>,
+}
+
+impl JobSlot {
+    fn lock(&self) -> MutexGuard<'_, Job> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes the slot for a build, or for a tool install when `build` is false.
+    fn claim(&self, build: bool) -> Result<Claim<'_>, String> {
+        let mut job = self.lock();
+        match *job {
+            Job::Idle => {}
+            Job::Build { .. } => return Err("A build is already running.".into()),
+            Job::Install => return Err("The build tools are being installed.".into()),
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        *job = if build {
+            Job::Build { cancel: cancel.clone(), pid: None }
+        } else {
+            Job::Install
+        };
+        Ok(Claim { slot: self, cancel })
+    }
+
+    /// Cancels a build and hands over its script's process id once it runs,
+    /// for the caller to stop (only once, so a second Cancel cannot hit a
+    /// reused id). Tool installs are left to finish.
+    fn cancel(&self) -> Option<u32> {
+        match &mut *self.lock() {
+            Job::Build { cancel, pid } => {
+                cancel.store(true, Ordering::SeqCst);
+                pid.take()
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Claim<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+
+    /// Records the started build script for Cancel. False when Cancel came
+    /// first; the caller then stops the script itself.
+    fn started(&self, id: u32) -> bool {
+        let mut job = self.slot.lock();
+        if self.cancelled() {
+            return false;
+        }
+        if let Job::Build { pid, .. } = &mut *job {
+            *pid = Some(id);
+        }
+        true
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        *self.slot.lock() = Job::Idle;
     }
 }
 
@@ -166,23 +257,12 @@ async fn launch_game(
     window.close().map_err(|e| e.to_string())
 }
 
-/// Stops the build script and the CMake/Ninja/compiler processes it started.
+/// Cancels the build: a source fetch stops and the script is not started, or
+/// the running script stops with the CMake/Ninja/compiler processes it started.
 fn stop_build(host: &Host) {
-    let Some(pid) = host.build_pid.lock().unwrap().take() else {
-        return;
-    };
-    #[cfg(unix)]
-    unsafe {
-        // The script leads its own process group (see start_build).
-        libc::kill(-(pid as i32), libc::SIGTERM);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .status();
+    if let Some(pid) = host.job.cancel() {
+        // The script leads its own process group on Unix (see start_build).
+        tools::kill_tree(pid);
     }
 }
 
@@ -220,6 +300,9 @@ async fn start_build(
     settings: Settings,
     request: BuildRequest,
 ) -> Result<Vec<Build>, String> {
+    // Held until this returns. A second build is turned away here, before the
+    // tool check and the source fetch, not when the script would start.
+    let claim = host.inner().job.claim(true)?;
     let repo = host
         .build_root()
         .ok_or("This launcher cannot fetch its sources. Build from a Souls of the Reaper source checkout.")?;
@@ -238,8 +321,8 @@ async fn start_build(
             return Err("The game sources are not downloaded yet. Approve the download to continue.".into());
         }
         let git = tool_path("git");
-        let (root, app) = (repo.clone(), app.clone());
-        tauri::async_runtime::spawn_blocking(move || {
+        let (root, app, cancel) = (repo.clone(), app.clone(), claim.cancel.clone());
+        let fetched = tauri::async_runtime::spawn_blocking(move || {
             sources::ensure(
                 &root,
                 build_info::BuildInfo::repository(),
@@ -248,16 +331,24 @@ async fn start_build(
                 &|line| {
                     let _ = app.emit("build-output", line);
                 },
+                &|| cancel.load(Ordering::SeqCst),
             )
         })
         .await
-        .map_err(|e| e.to_string())??;
+        .map_err(|e| e.to_string())?;
+        if claim.cancelled() {
+            return Err(CANCELLED.into());
+        }
+        fetched?;
     }
     // The SDK state comes from the sources' build script, which only now exists.
     let python = tool_path("python").unwrap_or_default();
     let report = if fetch { tools::detect(host.platform, &repo, &request.cmake) } else { report };
     if !report.sdk.installed && !request.download_sdk {
         return Err("The ReXGlue SDK needs to be built. Approve the download to continue.".into());
+    }
+    if claim.cancelled() {
+        return Err(CANCELLED.into());
     }
     write_settings(&host.settings_file, &settings)?;
 
@@ -267,6 +358,9 @@ async fn start_build(
         .args(&args)
         .current_dir(&repo)
         .env("PYTHONUNBUFFERED", "1")
+        .envs(tools::PYTHON_UTF8)
+        // The SDK checkout and the update patch tool are fetched with git too.
+        .envs(sources::GIT_NO_PROMPT)
         .envs(tools::path_with(&report.path_dirs).map(|p| ("PATH", p)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -281,17 +375,14 @@ async fn start_build(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let mut child = {
-        let mut running = host.build_pid.lock().unwrap();
-        if running.is_some() {
-            return Err("A build is already running.".into());
-        }
-        let child = command
-            .spawn()
-            .map_err(|e| format!("Unable to start Python 3: {e}. Install Python 3 to build the game."))?;
-        *running = Some(child.id());
-        child
-    };
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Unable to start Python 3: {e}. Install Python 3 to build the game."))?;
+    if !claim.started(child.id()) {
+        tools::kill_tree(child.id());
+        let _ = child.wait();
+        return Err(CANCELLED.into());
+    }
     let tail = Arc::new(Mutex::new(VecDeque::new()));
     let keep = |line: &str| Some(line.to_string());
     let readers = [
@@ -308,9 +399,8 @@ async fn start_build(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string());
-    let cancelled = host.build_pid.lock().unwrap().take().is_none();
-    if cancelled {
-        return Err("Build cancelled. Run it again to continue where it stopped.".into());
+    if claim.cancelled() {
+        return Err(CANCELLED.into());
     }
     if !status?.success() {
         let tail = tail.lock().unwrap();
@@ -369,9 +459,9 @@ async fn install_tools(
     let repo = host
         .build_root()
         .ok_or("This launcher cannot fetch its sources. Build from a Souls of the Reaper source checkout.")?;
-    if host.build_pid.lock().unwrap().is_some() {
-        return Err("A build is running.".into());
-    }
+    // Held through the tool check at the end, so two installs never overlap
+    // (the second would fail with MSI error 1618) and no build starts meanwhile.
+    let _claim = host.inner().job.claim(false)?;
     let platform = host.platform;
     let (dir, app_handle, cmake_choice) = (repo.clone(), app.clone(), cmake.clone());
     let failed = tauri::async_runtime::spawn_blocking(move || {
@@ -503,10 +593,12 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     search.extend(managed.clone());
     let builds = launch::discover_builds(platform, &launcher_dir, &search);
     // Source checkouts keep game folders at the repository root; installs
-    // keep them beside the launcher.
+    // keep them beside the launcher, or with the fetched sources when those
+    // went to the per-user folder because the launcher's is read-only.
     let base = repo
         .clone()
         .filter(|_| !builds.iter().any(|b| b.game_dir.is_some()))
+        .or_else(|| managed.as_deref().map(|m| sources::game_base(&launcher_dir, m)))
         .unwrap_or_else(|| launcher_dir.clone());
     let user_base = match platform {
         Platform::Windows => app.path().document_dir()?,
@@ -557,7 +649,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         search,
         repo,
         managed,
-        build_pid: Mutex::new(None),
+        job: JobSlot::default(),
     });
     // Sized to the v6 design's 500px stage (aspect 1088/1445), like Launcher.ps1.
     WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -594,4 +686,73 @@ fn main() {
                 stop_build(&host);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_job_runs_at_a_time_until_its_claim_drops() {
+        let slot = JobSlot::default();
+        let build = slot.claim(true).unwrap();
+        assert_eq!(slot.claim(true).err().as_deref(), Some("A build is already running."));
+        assert!(slot.claim(false).is_err(), "no install during a build");
+        drop(build);
+        let install = slot.claim(false).unwrap();
+        assert_eq!(slot.claim(false).err().as_deref(), Some("The build tools are being installed."));
+        assert!(slot.claim(true).is_err(), "no build during an install");
+        drop(install);
+        assert!(slot.claim(true).is_ok());
+    }
+
+    #[test]
+    fn simultaneous_build_clicks_admit_one() {
+        let slot = JobSlot::default();
+        let start = std::sync::Barrier::new(8);
+        let admitted = std::thread::scope(|s| {
+            let tries: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        // Kept, not dropped, so the slot stays taken for the others.
+                        slot.claim(true).map(std::mem::forget).is_ok()
+                    })
+                })
+                .collect();
+            tries.into_iter().map(|t| t.join().unwrap()).filter(|&ok| ok).count()
+        });
+        assert_eq!(admitted, 1);
+    }
+
+    #[test]
+    fn cancel_while_preparing_keeps_the_script_from_starting() {
+        let slot = JobSlot::default();
+        let claim = slot.claim(true).unwrap();
+        assert!(!claim.cancelled());
+        assert_eq!(slot.cancel(), None, "no process to stop yet");
+        assert!(claim.cancelled(), "the fetch sees the flag");
+        assert!(!claim.started(42), "a script started after Cancel is refused");
+        assert_eq!(slot.cancel(), None, "and not recorded");
+    }
+
+    #[test]
+    fn cancel_stops_a_running_script() {
+        let slot = JobSlot::default();
+        let claim = slot.claim(true).unwrap();
+        assert!(claim.started(42));
+        assert_eq!(slot.cancel(), Some(42));
+        assert!(claim.cancelled());
+        assert_eq!(slot.cancel(), None, "a second Cancel stops nothing again");
+        drop(claim);
+        assert!(slot.claim(true).is_ok(), "the slot is free once the build returns");
+    }
+
+    #[test]
+    fn tool_installs_are_not_cancelled() {
+        let slot = JobSlot::default();
+        let install = slot.claim(false).unwrap();
+        assert_eq!(slot.cancel(), None);
+        assert!(!install.cancelled());
+    }
 }

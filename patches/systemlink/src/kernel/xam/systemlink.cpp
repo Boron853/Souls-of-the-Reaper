@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <random>
@@ -44,14 +45,15 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
 
 REXCVAR_DEFINE_INT32(systemlink_instance, 0, "Kernel",
                      "Player number (0-65535) for System Link. 0 is the classic player id and name; "
-                     "N gives this copy its own id and the name User<N>, so two machines that play "
-                     "together are not the same player.");
+                     "N gives this copy its own ids (player 1 and its local co-op guests) and the "
+                     "name User<N>, so two machines that play together are not the same player.");
 
 REXCVAR_DEFINE_STRING(systemlink_address, "", "Kernel",
                       "IPv4 address this PC presents as its console address for System Link "
@@ -174,9 +176,15 @@ uint32_t XnAddrToInAddr(const XNADDR* xn_addr, uint8_t* in_addr_out) {
   }
   const uint32_t out_network = xn_addr->ina.addr;
   std::memcpy(in_addr_out, &out_network, 4);
-  {
+  // XNADDRs arrive in other machines' session advertisements. Only remember one for an address on
+  // this PC's own networks: datagrams from anywhere else are dropped anyway (see RecvFrom), and an
+  // off-network advertisement must not replace what a LAN peer's address is known as.
+  if (out_network != 0 && IsOnLink(out_network)) {
     std::lock_guard<std::mutex> lock(g_peer_mutex);
     g_peers[out_network] = *xn_addr;
+  } else {
+    REXKRNL_DEBUG("SystemLink: not remembering XNADDR for off-network address {:08X}",
+                  ntohl(out_network));
   }
   REXKRNL_DEBUG("SystemLink: XnAddrToInAddr {:08X} -> {:08X}", ntohl(xn_addr->ina.addr),
                 ntohl(out_network));
@@ -365,7 +373,8 @@ bool ShouldLogPacket() {
 
 struct InterfaceAddress {
   uint32_t address;    // network byte order
-  uint32_t broadcast;  // directed-broadcast address, network byte order
+  uint32_t mask;       // network byte order
+  bool can_broadcast;  // false for point-to-point links (some VPNs)
 };
 
 // Every up, non-loopback IPv4 interface. A limited broadcast (255.255.255.255) only leaves through
@@ -386,13 +395,12 @@ std::vector<InterfaceAddress> Interfaces() {
                nullptr) == 0) {
     for (DWORD i = 0; i < bytes / sizeof(INTERFACE_INFO); ++i) {
       const u_long flags = info[i].iiFlags;
-      if (!(flags & IFF_UP) || (flags & IFF_LOOPBACK) || !(flags & IFF_BROADCAST) ||
+      if (!(flags & IFF_UP) || (flags & IFF_LOOPBACK) ||
           info[i].iiAddress.Address.sa_family != AF_INET) {
         continue;
       }
-      uint32_t address = info[i].iiAddress.AddressIn.sin_addr.s_addr;
-      uint32_t mask = info[i].iiNetmask.AddressIn.sin_addr.s_addr;
-      result.push_back({address, address | ~mask});
+      result.push_back({info[i].iiAddress.AddressIn.sin_addr.s_addr,
+                        info[i].iiNetmask.AddressIn.sin_addr.s_addr, (flags & IFF_BROADCAST) != 0});
     }
   }
   ::closesocket(probe);
@@ -401,13 +409,12 @@ std::vector<InterfaceAddress> Interfaces() {
   if (getifaddrs(&list) == 0) {
     for (ifaddrs* it = list; it; it = it->ifa_next) {
       if (!it->ifa_addr || it->ifa_addr->sa_family != AF_INET || !it->ifa_netmask ||
-          !(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK) ||
-          !(it->ifa_flags & IFF_BROADCAST)) {
+          !(it->ifa_flags & IFF_UP) || (it->ifa_flags & IFF_LOOPBACK)) {
         continue;
       }
-      uint32_t address = reinterpret_cast<sockaddr_in*>(it->ifa_addr)->sin_addr.s_addr;
-      uint32_t mask = reinterpret_cast<sockaddr_in*>(it->ifa_netmask)->sin_addr.s_addr;
-      result.push_back({address, address | ~mask});
+      result.push_back({reinterpret_cast<sockaddr_in*>(it->ifa_addr)->sin_addr.s_addr,
+                        reinterpret_cast<sockaddr_in*>(it->ifa_netmask)->sin_addr.s_addr,
+                        (it->ifa_flags & IFF_BROADCAST) != 0});
     }
     freeifaddrs(list);
   }
@@ -415,22 +422,123 @@ std::vector<InterfaceAddress> Interfaces() {
   return result;
 }
 
+// Interfaces(), refreshed at most every two seconds: every received datagram is checked against
+// them, and asking the OS for its interfaces once per packet is slow.
+std::vector<InterfaceAddress> CurrentInterfaces() {
+  static std::mutex mutex;
+  static std::vector<InterfaceAddress> cached;
+  static std::chrono::steady_clock::time_point refreshed;
+  static bool valid = false;
+  std::lock_guard<std::mutex> lock(mutex);
+  const auto now = std::chrono::steady_clock::now();
+  if (!valid || now - refreshed > std::chrono::seconds(2)) {
+    cached = Interfaces();
+    refreshed = now;
+    valid = true;
+  }
+  return cached;
+}
+
 std::vector<uint32_t> InterfaceBroadcastAddresses() {
   std::vector<uint32_t> result;
-  for (const InterfaceAddress& iface : Interfaces()) {
-    result.push_back(iface.broadcast);
+  for (const InterfaceAddress& iface : CurrentInterfaces()) {
+    if (iface.can_broadcast) {
+      result.push_back(iface.address | ~iface.mask);
+    }
   }
   return result;
 }
 
 bool IsOwnPacket(const N_XSOCKADDR_IN& from) {
   const uint32_t source = htonl(static_cast<uint32_t>(from.sin_addr));
-  for (const InterfaceAddress& iface : Interfaces()) {
+  for (const InterfaceAddress& iface : CurrentInterfaces()) {
     if (iface.address == source) {
       return true;
     }
   }
   return false;
+}
+
+bool IsOnLink(uint32_t address) {
+  if ((ntohl(address) >> 24) == 127) {
+    return true;  // loopback: another copy of the game on this PC
+  }
+  const std::vector<InterfaceAddress> interfaces = CurrentInterfaces();
+  if (interfaces.empty()) {
+    return true;  // the OS did not list its networks; do not cut System Link off
+  }
+  for (const InterfaceAddress& iface : interfaces) {
+    if ((address & iface.mask) == (iface.address & iface.mask)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+namespace {
+
+// True when a datagram is waiting on the socket, without waiting for one.
+bool HasPendingDatagram(XSocket* socket) {
+#if REX_PLATFORM_WIN32
+  const SOCKET handle = static_cast<SOCKET>(socket->native_handle());
+  fd_set readable;
+  FD_ZERO(&readable);
+  FD_SET(handle, &readable);
+  timeval no_wait = {0, 0};
+  return ::select(0, &readable, nullptr, nullptr, &no_wait) > 0;
+#else
+  // poll, unlike select, has no FD_SETSIZE limit on descriptor numbers.
+  pollfd entry = {static_cast<int>(socket->native_handle()), POLLIN, 0};
+  return ::poll(&entry, 1, 0) > 0;
+#endif
+}
+
+void SetWouldBlock() {
+#if REX_PLATFORM_WIN32
+  WSASetLastError(WSAEWOULDBLOCK);
+#else
+  errno = EWOULDBLOCK;
+#endif
+}
+
+bool ShouldLogDrop() {
+  static std::atomic<int> logged{0};
+  return logged.fetch_add(1, std::memory_order_relaxed) < 20;
+}
+
+}  // namespace
+
+int RecvFrom(XSocket* socket, uint8_t* buf, uint32_t len, uint32_t flags, N_XSOCKADDR_IN* from,
+             uint32_t* from_len) {
+  constexpr uint32_t kMsgPeek = 0x2;  // the same value in winsock and on POSIX hosts
+  for (;;) {
+    const int ret = socket->RecvFrom(buf, len, flags, from, from_len);
+    if (ret < 0) {
+      return ret;
+    }
+    // A console never hears its own broadcasts, and System Link never reaches past the LAN.
+    const bool own = IsOwnPacket(*from);
+    if (!own && IsOnLink(htonl(static_cast<uint32_t>(from->sin_addr)))) {
+      return ret;
+    }
+    if (!own && ShouldLogDrop()) {
+      REXKRNL_INFO("SystemLink: dropped {} bytes from {:08X}:{} (not on a network this PC is on)", ret,
+                   static_cast<uint32_t>(from->sin_addr), static_cast<uint16_t>(from->sin_port));
+    }
+    if (flags & kMsgPeek) {
+      // A peek leaves the datagram queued; read it for real so it is gone and the next call
+      // does not return it again (which spun the guest's receive loop).
+      N_XSOCKADDR_IN discarded;
+      uint32_t discarded_len = sizeof(sockaddr_in);
+      socket->RecvFrom(buf, len, flags & ~kMsgPeek, &discarded, &discarded_len);
+    }
+    if (!HasPendingDatagram(socket)) {
+      // The guest may have select()ed this socket as readable because of the dropped datagram;
+      // waiting here for another one would block a thread that expected data at once.
+      SetWouldBlock();
+      return -1;
+    }
+  }
 }
 
 uint32_t SetPort(uint32_t port) {

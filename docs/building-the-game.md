@@ -43,8 +43,8 @@ If you already have an extracted disc in `game\`:
 python scripts\build_windows.py --build-sdk --game-dir game
 ```
 
-- `--build-sdk` clones, patches and builds the SDK (`tools\rexglue-sdk-win`, installed to `tools\rexglue-install-win`). Omit it on later builds.
-- `--skip-codegen` reuses generated sources, for when only host code (`port\src`) changed.
+- `--build-sdk` clones, patches and builds the SDK (`tools\rexglue-sdk-win`, installed to `tools\rexglue-install-win`). Omit it on later builds. Each run resets the checkout to the pinned commit before patching, so local edits there are discarded.
+- `--skip-codegen` reuses generated sources, for when only host code (`port\src`) changed. It fails if they were generated from a different executable, manifest, `config/*.toml`, SDK commit or code-generator patch (recorded in `port\generated\<variant>\codegen-inputs.json`).
 - `--title-update usa` builds the update executable (needs the staged overlay, see the [update guide](../port/title_updates/update/README.md)).
 - `--no-extra-features` compiles without the optional PC features.
 - `--jobs N` sets build parallelism (default: CPU count).
@@ -117,7 +117,8 @@ More run options, diagnostics and input notes are in the [Linux integration note
 ## Troubleshooting
 
 - **`SHA-256 mismatch` / `Default.xex missing`**: only the unmodified USA Ultimate Evil Edition disc (and USA update) is supported at this time.
-- **`SDK revision mismatch`**: delete `tools/rexglue-sdk-*` and rerun with `--build-sdk`.
-- **Stale generated code after pulling changes** to manifests, `config/*.toml` or SDK patches: rerun without `--skip-codegen`.
+- **Interrupted or failed SDK build, or a new SDK pin**: rerun with `--build-sdk`. The checkout is fetched if needed and reset to the pinned commit, then patched from scratch.
+- **Interrupted disc or update extraction**: rerun the same command. Partly written files (`*.part`) are resumed; a file whose content differs from the disc is reported and left alone.
+- **Stale generated code after pulling changes** to manifests, `config/*.toml`, the SDK pin or code-generator patches: `build_client.py` and the launcher regenerate automatically; with `build_*.py`, rerun without `--skip-codegen`.
 - **Windows and Linux SDKs are separate** (`tools/rexglue-sdk-win` vs `tools/rexglue-sdk-linux`); do not share a prefix between them. Generated sources in `port/generated/` are shared.
 - **Tests**: `python3 -m unittest discover -s tests -p test_linux_tools.py`

@@ -45,8 +45,9 @@ python3 scripts/run_linux.py --title-update usa --vulkan_device=1 \
   --game-dir /path/to/updated-disc
 ```
 
-After codegen, `--skip-codegen` reuses update sources only if their recorded
-executable hash matches. Output is `port/out/build/linux-amd64-update-relwithdebinfo/diablo3`;
+After codegen, `--skip-codegen` reuses update sources only if they were generated
+from the same executable, manifest, function hints, SDK commit and code-generator
+patches (recorded in `port/generated/update/codegen-inputs.json`). Output is `port/out/build/linux-amd64-update-relwithdebinfo/diablo3`;
 generated sources are in `port/generated/update`. The launcher's default
 user-data directory is `$XDG_DATA_HOME/souls-of-the-reaper-update` or
 `~/.local/share/souls-of-the-reaper-update`; `--state-dir` can override it.

@@ -9,6 +9,7 @@
 #include <tlhelp32.h>
 #endif
 #include "window_features.h"
+#include "render_scale.h"
 #ifdef SOULS_ENABLE_EXTRA_FEATURES
 #include "features/pc_features.h"
 #endif
@@ -132,21 +133,8 @@ private:
     d3::features::UpdateWindowMode(window);
 #endif
     // Read after setup too: optional saved settings are applied after dialogs
-    // are created. Windows' older SDK only exposes the per-axis scale flags.
-#ifdef _WIN32
-    const auto axis = [](const char *name) {
-      return std::clamp(std::stoi(rex::cvar::GetFlagByName(name)), 1, 7);
-    };
-#else
-    const auto shared = std::stoi(rex::cvar::GetFlagByName("resolution_scale"));
-    const auto axis = [&](const char *name) {
-      return std::clamp(rex::cvar::HasNonDefaultValue(name)
-                            ? std::stoi(rex::cvar::GetFlagByName(name))
-                            : shared, 1, 7);
-    };
-#endif
-    const auto scale_x = axis("draw_resolution_scale_x");
-    const auto scale_y = axis("draw_resolution_scale_y");
+    // are created.
+    const auto [scale_x, scale_y] = d3::ConfiguredRenderScale();
     const auto size = dimensions.load(std::memory_order_relaxed);
     std::ostringstream title;
     title << "Souls of the Reaper | " << std::fixed << std::setprecision(1) << fps << " FPS";

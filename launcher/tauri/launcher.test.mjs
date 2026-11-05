@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { JSDOM } from 'jsdom';
+import { JSDOM, VirtualConsole } from 'jsdom';
 
 const legacyHtml = readFileSync(new URL('../v6_borderless_final.html', import.meta.url), 'utf8');
 const tauriHtml = readFileSync(new URL('./dist/index.html', import.meta.url), 'utf8');
@@ -14,8 +14,8 @@ const BUILDS = [
   { id: 'update-extras', label: 'Update + Extras', update: true, extras: true, executable: '/r/linux-amd64-update-extras-relwithdebinfo/diablo3' },
 ];
 
-function page(html, globals) {
-  const dom = new JSDOM(html, { runScripts: 'dangerously', beforeParse: window => Object.assign(window, globals) });
+function page(html, globals, options = {}) {
+  const dom = new JSDOM(html, { runScripts: 'dangerously', beforeParse: window => Object.assign(window, globals), ...options });
   const doc = dom.window.document;
   const rows = () => [...doc.querySelectorAll('#menu .opt-row')].map(r => ({
     row: r, label: r.querySelector('.opt-label').textContent, value: r.querySelector('.opt-val')?.textContent,
@@ -27,7 +27,7 @@ function page(html, globals) {
 }
 
 function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved = { res: -1, display: -1 }, failLaunch = false,
-  canBuild = true, responses = {}, caps = {} } = {}) {
+  canBuild = true, responses = {}, caps = {}, events = true, jsdom = {} } = {}) {
   const calls = [];
   const listeners = {};
   const invoke = async (command, args) => {
@@ -37,11 +37,11 @@ function tauriPage({ platform = 'linux', builds = BUILDS, settings = {}, saved =
   };
   const listen = async (event, handler) => { listeners[event] = handler; return () => {}; };
   const p = page(tauriHtml, {
-    __TAURI__: { core: { invoke }, event: { listen } },
+    __TAURI__: { core: { invoke }, event: events ? { listen } : {} },
     LAUNCHER_CAPS: { platform, updateInstalled: !!settings.updateInstalled, backends: platform === 'windows' ? ['d3d12', 'vulkan'] : ['vulkan'], builds, canBuild, defaults: { gameDir: '/r/game', gameDirUpdate: '/r/game', userDataRoot: '/d/sotr', userDataRootUpdate: '/d/sotr-update' }, ...caps },
     LAUNCHER_SETTINGS: { gameDir: '', gameDirUpdate: '', userDataRoot: '', userDataRootUpdate: '', vulkanDevice: -1, ...settings },
     SAVED_STATE: { ...saved, username: settings.username ?? '' },
-  });
+  }, jsdom);
   const emit = (event, payload) => listeners[event]({ payload });
   return { ...p, calls, emit };
 }
@@ -159,6 +159,18 @@ test('The font credit under Play opens in the default browser', async () => {
   assert.deepEqual(calls.filter(c => c.command === 'open_external').map(c => c.args.url), [link.href]);
 });
 
+test('The borderless window can still be closed when the host setup fails', async () => {
+  const errors = [];
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on('jsdomError', error => errors.push(error));
+  // Without the event API the Build panel setup throws halfway through.
+  const { doc, click, calls } = tauriPage({ events: false, jsdom: { virtualConsole } });
+  assert.match(String(errors[0]?.cause ?? errors[0]), /listen/);
+  click(doc.getElementById('winClose'));
+  await tick();
+  assert.deepEqual(calls.filter(c => c.command === 'window_action').map(c => c.args.action), ['close']);
+});
+
 test('Launch failures stay visible and restore the Play button', async () => {
   const { doc, click } = tauriPage({ failLaunch: true });
   click(doc.getElementById('playBtn'));
@@ -235,6 +247,32 @@ test('Building streams progress, saves inputs and adds the new build to Game Ver
   assert.match(doc.getElementById('buildList').textContent, /Update \+ Extras/);
   assert.equal(doc.getElementById('buildPanel').hidden, true, 'a finished build returns to the main screen');
   assert.equal(doc.getElementById('launchStatus').textContent, 'Build complete. Choose it under Game Version.');
+});
+
+test('A double click on Build starts one build and the panel stays busy until it ends', async () => {
+  let finish;
+  const { doc, click, calls } = tauriPage({
+    builds: [],
+    responses: {
+      // The host turns a second build away; that error must not reset the panel.
+      start_build: () => (finish ? Promise.reject('A build is already running.') : new Promise(resolve => { finish = resolve; })),
+    },
+  });
+  click(doc.getElementById('startBuild'));
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(calls.filter(c => c.command === 'start_build').length, 1);
+  assert.equal(doc.getElementById('cancelBuild').hidden, false);
+  assert.equal(doc.getElementById('playBtn').disabled, true);
+  assert.equal(doc.getElementById('closeBuild').disabled, true);
+  finish(BUILDS);
+  await tick(); await tick();
+  assert.equal(doc.getElementById('playBtn').disabled, false);
+  assert.equal(doc.getElementById('cancelBuild').hidden, true);
+  assert.equal(doc.getElementById('startBuild').disabled, false);
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(calls.filter(c => c.command === 'start_build').length, 2, 'Build works again afterwards');
 });
 
 const tick1 = (doc, el, on) => { el.checked = on; el.dispatchEvent(new doc.defaultView.Event('change')); };
@@ -352,6 +390,31 @@ test('Windows offers to install missing tools with winget and says it accepts th
   assert.equal(doc.querySelector('#toolList li').className, 'ok');
 });
 
+test('Checking tools while winget runs does not offer a second install', async () => {
+  const missing = { ...TOOL('git', false), winget: 'Git.Git' };
+  const report = { ready: false, winget: true, tools: [missing], sdk: SDK(true) };
+  let finish;
+  const { doc, click, calls } = tauriPage({ platform: 'windows', builds: [],
+    responses: { check_build_tools: () => report, install_tools: () => new Promise(resolve => { finish = resolve; }) } });
+  await tick();
+  assert.equal(doc.getElementById('wingetRow').hidden, false);
+  click(doc.getElementById('installTools'));
+  await tick();
+  assert.equal(doc.getElementById('recheckTools').disabled, true);
+  click(doc.getElementById('recheckTools'));
+  // A check started before the install, or by the CMake field, can still finish meanwhile.
+  doc.getElementById('buildCmake').dispatchEvent(new doc.defaultView.Event('change'));
+  await tick(); await tick();
+  assert.equal(doc.getElementById('wingetRow').hidden, true);
+  click(doc.getElementById('installTools'));
+  await tick();
+  assert.equal(calls.filter(c => c.command === 'install_tools').length, 1);
+  finish({ ...report, ready: true, tools: [{ ...missing, found: true }] });
+  await tick(); await tick();
+  assert.equal(doc.getElementById('recheckTools').disabled, false);
+  assert.match(doc.getElementById('buildStep').textContent, /installed/);
+});
+
 test('The winget button stays hidden without winget or missing tools', async () => {
   for (const report of [
     { ready: false, winget: false, tools: [{ ...TOOL('git', false), winget: 'Git.Git' }], sdk: SDK(true) },
@@ -380,6 +443,32 @@ test('A missing SDK is only downloaded after the user agrees', async () => {
   click(doc.getElementById('sdkYes'));
   await tick(); await tick();
   assert.equal(calls.find(c => c.command === 'start_build').args.request.downloadSdk, true);
+});
+
+test('Closing the Build panel at the download prompt drops that request', async () => {
+  const report = { ready: true, tools: [TOOL('git', true)], sdk: SDK(false) };
+  const { doc, click, calls } = tauriPage({ builds: [], responses: { check_build_tools: () => report, start_build: async () => [] } });
+  await tick();
+  doc.getElementById('buildIso').value = '/isos/old.iso';
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  assert.equal(doc.getElementById('sdkPrompt').hidden, false);
+  click(doc.getElementById('closeBuild'));
+  await tick();
+  assert.equal(doc.getElementById('buildPanel').hidden, true);
+  assert.equal(doc.getElementById('sdkPrompt').hidden, true, 'the prompt closes with the panel');
+  click(doc.getElementById('openBuild'));
+  await tick();
+  assert.equal(doc.getElementById('sdkPrompt').hidden, true);
+  assert.equal(doc.getElementById('startBuild').disabled, false);
+  doc.getElementById('buildIso').value = '/isos/new.iso';
+  click(doc.getElementById('startBuild'));
+  await tick(); await tick();
+  click(doc.getElementById('sdkYes'));
+  await tick(); await tick();
+  const builds = calls.filter(c => c.command === 'start_build');
+  assert.equal(builds.length, 1);
+  assert.equal(builds[0].args.request.iso, '/isos/new.iso');
 });
 
 test('Missing game sources are listed and downloaded only after the user agrees', async () => {

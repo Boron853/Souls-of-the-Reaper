@@ -7,6 +7,21 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+def read_source(path):
+    """Text of a generated file with "\\n" line endings, whatever the generator wrote."""
+    with open(path, encoding="utf-8") as stream:
+        return stream.read()
+
+
+def write_source(path, text):
+    """Replace a generated file atomically (so an interrupted run never leaves half a shard),
+    with the same LF line endings on every host."""
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", encoding="utf-8", newline="") as stream:
+        stream.write(text)
+    temporary.replace(path)
+
+
 def patch_generated(directory, title_update=None):
     replacements = {
         "sub_831583B0": (ROOT / "port/title_updates/setjmp.cpp.in").read_text().strip(),
@@ -37,7 +52,7 @@ DEFINE_REX_FUNC(sub_82632E00) {
         for path in directory.glob("*_recomp.*.cpp"):
             text = edits.get(path)
             if text is None:
-                text = path.read_text()
+                text = read_source(path)
             matches.extend((path, text) for _ in pattern.finditer(text))
         if len(matches) != 1:
             raise ValueError(f"Expected one definition of {symbol}, found {len(matches)}")
@@ -55,7 +70,7 @@ DEFINE_REX_FUNC(sub_82632E00) {
     call = re.compile(r"\b" + setjmp_symbol + r"\(ctx, base\);")
     uses = 0
     for path in directory.glob("*_recomp.*.cpp"):
-        text = edits.get(path) or path.read_text()
+        text = edits.get(path) or read_source(path)
         text, count = call.subn("D3_GUEST_SETJMP(ctx);", text)
         if count:
             if '#include "guest_jump.h"' not in text:
@@ -68,8 +83,8 @@ DEFINE_REX_FUNC(sub_82632E00) {
         raise ValueError(f"Expected at least one call to {setjmp_symbol}")
     # Validate every anchor before modifying any file.
     for path, text in edits.items():
-        if path.read_text() != text:
-            path.write_text(text)
+        if read_source(path) != text:
+            write_source(path, text)
 
 
 def main():

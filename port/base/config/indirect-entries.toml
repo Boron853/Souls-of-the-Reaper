@@ -1,0 +1,41 @@
+# Entry points reached only through an address built in code (lis/addi) or stored in data.
+# Each starts directly after the previous function's terminator (blr/bctr/b) with no zero
+# padding word, so codegen merges it into that function and never registers it. An
+# indirect call then lands in InvalidFunctionTrap: a silent no-op on Windows (r3 left
+# stale), REX_FATAL on Linux. Found by sweeping the base disc executable for code
+# addresses built with lis+addi/ori or stored in data, minus registered starts, internal
+# labels, jump tables and exception data. Relocated update entries: see ../../title_updates/update.
+
+# Functor thunk (lwz r11,0(r3); mr r10,r3; addi r3,r11,12; ...; mtctr r11; bctr), right after
+# the thunk at 0x8253D528 whose bctr ends on a 16-byte boundary. The getter at 0x8253D9E0
+# returns it and the constructor at 0x8253DCB8 stores it as a functor's invoke pointer.
+# Upstream needed it to switch to a non-default hero (without it the hero load never runs).
+[functions."0x8253D550"]
+size = 0x2C
+
+# Functor thunk: lwz r3,0(r3); b 0x82547930. Getter 0x8254CCE0, second reference 0x8254D0C0.
+[functions."0x8254BFD0"]
+size = 0x8
+
+# Functor thunk: lwz r3,0(r3); b 0x8254DD20. Getter 0x8255DE50, second reference 0x8255E220.
+[functions."0x8255D8D0"]
+size = 0x8
+
+# Empty method (blr). Getter 0x827A9ED8, second reference 0x827AC6A8.
+[functions."0x827A9578"]
+size = 0x4
+
+# Lua 5.1 str_find (li r4,1; b str_find_aux): string.find. Referenced from the strlib[] table
+# at 0x8223FCE8 ("find"); luaopen_string is in lualibs[], opened by luaL_openlibs (0x82DA4E88).
+# string.match at 0x82DB0E88, the same shape right after it, is registered without a hint.
+[functions."0x82DB0E80"]
+size = 0x8
+
+# XML parser state handler (expat xmlrole style: compares the token, stores the next handler,
+# returns a role). Stored as the next handler at 0x830FCB70 and called via bctrl at 0x830FCD50.
+[functions."0x830FC618"]
+size = 0x78
+
+# XML parser state handler of the same family, stored as the next handler at 0x830FCD5C.
+[functions."0x830FC988"]
+size = 0x5C

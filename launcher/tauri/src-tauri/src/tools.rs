@@ -20,6 +20,9 @@ const MIN_CLANG_WINDOWS: u32 = 22;
 /// (scripts/build_client.py computes the exact need and stops if it is short).
 const WARN_FREE_BYTES: u64 = 15 << 30;
 const VS_COMPONENT: &str = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
+/// Set on every Python child: on Windows it otherwise writes piped output in
+/// the ANSI code page, and the launcher reads UTF-8 (paths with accents).
+pub const PYTHON_UTF8: [(&str, &str); 2] = [("PYTHONUTF8", "1"), ("PYTHONIOENCODING", "utf-8")];
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,11 +90,13 @@ pub fn find_program(name: &str, platform: Platform, dirs: &[PathBuf]) -> Option<
 }
 
 /// Stdout of `program args`, or None when it cannot run or fails (this also
-/// rejects the Microsoft Store `python.exe` stub on Windows).
+/// rejects the Microsoft Store `python.exe` stub on Windows). Python and the
+/// `py` launcher are run through here, so the UTF-8 settings go on every call.
 fn output_of(program: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new(program);
     command
         .args(args)
+        .envs(PYTHON_UTF8)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]
@@ -453,6 +458,26 @@ pub fn detect(platform: Platform, repo: &Path, cmake_choice: &str) -> ToolReport
     }
 }
 
+/// Stops `pid` and the processes it started (CMake and the compilers under the
+/// build script, git's transport helpers under git): its process group on Unix,
+/// where the child must lead one (`process_group(0)`), its process tree on Windows.
+pub fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .status();
+    }
+}
+
 /// `PATH` for the build script: `extra` ahead of the inherited one.
 pub fn path_with(extra: &[PathBuf]) -> Option<OsString> {
     if extra.is_empty() {
@@ -531,6 +556,7 @@ pub fn sdk_status_from_script(python: &Path, repo: &Path) -> Option<Sdk> {
         .arg(script)
         .arg("--print-sdk-status")
         .current_dir(repo)
+        .envs(PYTHON_UTF8)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]

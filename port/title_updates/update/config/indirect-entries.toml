@@ -1,0 +1,54 @@
+# update executable SHA-256: 447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f
+# Entry points reached only through an address built in code (lis/addi) or stored in data.
+# Each starts directly after the previous function's terminator with no zero padding word,
+# so codegen merges it into that function and never registers it; an indirect call then
+# lands in InvalidFunctionTrap. This is a layout effect, so the update executable was swept
+# on its own: the first seven entries are the base disc's (see port/base/config/
+# indirect-entries.toml and ../relocations.json); the rest exist only in the update, where
+# the relink packed functions back to back that are padded apart in the base disc.
+
+# Base 0x8253D550: functor thunk needed to switch to a non-default hero. Getter 0x825407A8.
+[functions."0x82540318"]
+size = 0x2C
+
+# Base 0x8254BFD0: functor thunk (lwz r3,0(r3); b ...).
+[functions."0x8254FB50"]
+size = 0x8
+
+# Base 0x8255D8D0: functor thunk (lwz r3,0(r3); b ...).
+[functions."0x825613C0"]
+size = 0x8
+
+# Base 0x827A9578: empty method (blr).
+[functions."0x827B0078"]
+size = 0x4
+
+# Base 0x82DB0E80: Lua 5.1 str_find (string.find), referenced from the strlib[] table.
+[functions."0x82DB9040"]
+size = 0x8
+
+# Base 0x830FC618: XML parser state handler.
+[functions."0x83105860"]
+size = 0x78
+
+# Base 0x830FC988: XML parser state handler.
+[functions."0x83105BD0"]
+size = 0x5C
+
+# Update only: functor thunks returned by the getters at 0x8240A0A0 and 0x8240A0B0.
+[functions."0x82408DB0"]
+size = 0x30
+
+[functions."0x82408DE0"]
+size = 0x30
+
+# Update only: functor thunk (lwz r7,0(r4); ...; b 0x82546D78), returned by the getter at 0x82549D98.
+[functions."0x825497A0"]
+size = 0x1C
+
+# Update only: functor thunks stored in the vtable slots 0x8203D6F4 and 0x8203D804.
+[functions."0x8254A838"]
+size = 0x30
+
+[functions."0x8254AB38"]
+size = 0x30

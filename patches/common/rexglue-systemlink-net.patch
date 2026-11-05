@@ -424,21 +424,15 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
  u32 NetDll_setsockopt_entry(u32 caller, u32 socket_handle, u32 level, u32 optname,
                              mapped_void optval_ptr, u32 optlen) {
 -  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
--  if (!socket) {
--    // WSAENOTSOCK
--    XThread::SetLastError(0x2736);
--    return -1;
--  }
--
--  X_STATUS status = socket->SetOption(level, optname, optval_ptr, optlen);
 +  systemlink::TraceNetCall("setsockopt", static_cast<uint32_t>(level), static_cast<uint32_t>(optname));
 +  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(systemlink::SockFromGuest(socket_handle));
-+  if (!socket) {
-+    // WSAENOTSOCK
-+    XThread::SetLastError(0x2736);
-+    return -1;
-+  }
-+
+   if (!socket) {
+     // WSAENOTSOCK
+     XThread::SetLastError(0x2736);
+     return -1;
+   }
+ 
+-  X_STATUS status = socket->SetOption(level, optname, optval_ptr, optlen);
 +  int32_t option_value = 0;
 +  void* option_ptr = optval_ptr;
 +  if (!systemlink::PrepareSocketOption(level, optname, option_ptr, optlen, option_value)) {
@@ -585,17 +579,18 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
    if (!socket) {
      // WSAENOTSOCK
      XThread::SetLastError(0x2736);
-@@ -869,8 +900,18 @@
+@@ -869,8 +900,19 @@
      native_from = *from_ptr;
    }
    uint32_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
 -  int ret =
 -      socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
-+  int ret;
-+  do {
-+    ret = socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
-+    // A console never hears its own broadcasts; skip them.
-+  } while (ret >= 0 && systemlink::IsOwnPacket(native_from));
++  // Skips datagrams a console would never receive (this PC's own broadcasts, senders outside
++  // the LAN); the from address is needed for that even when the guest did not ask for it.
++  if (!fromlen_ptr) {
++    native_fromlen = sizeof(XSOCKADDR_IN);
++  }
++  int ret = systemlink::RecvFrom(socket.get(), buf_ptr, buf_len, flags, &native_from, &native_fromlen);
 +  [[maybe_unused]] const int host_errno = errno;
 +  if (ret >= 0) {
 +    if (systemlink::ShouldLogPacket()) {
@@ -606,7 +601,7 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
  
    if (from_ptr) {
      from_ptr->sin_family = native_from.sin_family;
-@@ -888,7 +929,7 @@
+@@ -888,7 +930,7 @@
      uint32_t error_code = WSAGetLastError();
      XThread::SetLastError(error_code);
  #else
@@ -615,7 +610,7 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
  #endif
    }
  
-@@ -896,7 +937,8 @@
+@@ -896,7 +938,8 @@
  }
  
  u32 NetDll_send_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len, u32 flags) {
@@ -625,7 +620,7 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
    if (!socket) {
      // WSAENOTSOCK
      XThread::SetLastError(0x2736);
-@@ -908,7 +950,8 @@
+@@ -908,7 +951,8 @@
  
  u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len, u32 flags,
                          ppc_ptr_t<XSOCKADDR_IN> to_ptr, u32 to_len) {
@@ -635,7 +630,7 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
    if (!socket) {
      // WSAENOTSOCK
      XThread::SetLastError(0x2736);
-@@ -916,7 +959,11 @@
+@@ -916,7 +960,11 @@
    }
  
    N_XSOCKADDR_IN native_to(to_ptr);
@@ -648,7 +643,7 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
  }
  
  u32 NetDll___WSAFDIsSet_entry(u32 socket_handle, ppc_ptr_t<x_fd_set> fd_set) {
-@@ -1030,25 +1077,17 @@
+@@ -1030,25 +1078,17 @@
  REX_EXPORT_STUB(__imp__NetDll_XHttpShutdown);
  REX_EXPORT_STUB(__imp__NetDll_XHttpStartup);
  REX_EXPORT_STUB(__imp__NetDll_XHttpWriteData);
@@ -674,7 +669,7 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
  REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
-@@ -1098,5 +1137,4 @@
+@@ -1098,5 +1138,4 @@
  REX_EXPORT_STUB(__imp__NetDll_XnpUnregisterKeyForCallerType);
  REX_EXPORT_STUB(__imp__NetDll_XnpUpdateConfigParams);
  REX_EXPORT_STUB(__imp__NetDll_getpeername);
@@ -683,30 +678,34 @@ diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
 diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
 --- a/src/system/xam/user_profile.cpp
 +++ b/src/system/xam/user_profile.cpp
-@@ -14,9 +14,12 @@
+@@ -16,11 +16,14 @@
  
  #include <fmt/format.h>
  
 +#include <rex/cvar.h>
  #include <rex/logging.h>
+ #include <rex/string/utf8.h>
  #include <rex/system/kernel_state.h>
  #include <rex/system/xam/user_profile.h>
-+
-+REXCVAR_DECLARE(int32_t, systemlink_instance);
  
++REXCVAR_DECLARE(int32_t, systemlink_instance);
++
  namespace rex {
  namespace system {
-@@ -26,8 +29,12 @@
+ namespace xam {
+@@ -29,8 +32,14 @@ UserProfile::UserProfile() {
    // 58410A1F checks the user XUID against a mask of 0x00C0000000000000 (3<<54),
    // if non-zero, it prevents the user from playing the game.
    // "You do not have permissions to perform this operation."
 -  xuid_ = 0xB13EBABEBABEBABE;
 -  name_ = "User";
 +  // System Link: copies of the game that play together must not be the same player, so each
-+  // instance (--systemlink_instance) counts up from the classic XUID and gets its own name.
-+  // Instance 0 is unchanged, so existing saves keep working.
++  // instance (--systemlink_instance) gets its own block of four XUIDs from the classic one: this
++  // player and up to three local co-op guests (on Windows, xam_user.cpp gives guests the next
++  // three), so no two players on the LAN share an XUID or a save folder. Instance 0 is
++  // unchanged, so existing saves keep working.
 +  const int32_t sl_instance = REXCVAR_GET(systemlink_instance) & 0xFFFF;
-+  xuid_ = 0xB13EBABEBABEBABE + static_cast<uint64_t>(sl_instance);
++  xuid_ = 0xB13EBABEBABEBABE + (static_cast<uint64_t>(sl_instance) << 2);
 +  name_ = sl_instance ? fmt::format("User{}", sl_instance) : std::string("User");
    // The launcher passes the player's chosen name here. XAM name buffers hold
    // 16 bytes including the terminator, so keep at most 15 characters.

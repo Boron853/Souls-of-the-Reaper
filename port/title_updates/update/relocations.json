@@ -771,6 +771,55 @@
       "size": 128,
       "context_radius": 256,
       "matches": 1
+    },
+    {
+      "base": "8253D550",
+      "updated": "82540318",
+      "file": "indirect-entries.toml",
+      "size": 44,
+      "method": "functor thunk; same body, getter 0x8253D9E0 -> 0x825407A8 (found by sweeping each executable separately)"
+    },
+    {
+      "base": "8254BFD0",
+      "updated": "8254FB50",
+      "file": "indirect-entries.toml",
+      "size": 8,
+      "method": "functor thunk; same body, relocated tail branch (found by sweeping each executable separately)"
+    },
+    {
+      "base": "8255D8D0",
+      "updated": "825613C0",
+      "file": "indirect-entries.toml",
+      "size": 8,
+      "method": "functor thunk; same body, relocated tail branch (found by sweeping each executable separately)"
+    },
+    {
+      "base": "827A9578",
+      "updated": "827B0078",
+      "file": "indirect-entries.toml",
+      "size": 4,
+      "method": "empty method; same address-taken getter pattern (found by sweeping each executable separately)"
+    },
+    {
+      "base": "82DB0E80",
+      "updated": "82DB9040",
+      "file": "indirect-entries.toml",
+      "size": 8,
+      "method": "Lua str_find; referenced from the relocated strlib[] table (found by sweeping each executable separately)"
+    },
+    {
+      "base": "830FC618",
+      "updated": "83105860",
+      "file": "indirect-entries.toml",
+      "size": 120,
+      "method": "XML parser state handler; same body and handler chain (found by sweeping each executable separately)"
+    },
+    {
+      "base": "830FC988",
+      "updated": "83105BD0",
+      "file": "indirect-entries.toml",
+      "size": 92,
+      "method": "XML parser state handler; same body and handler chain (found by sweeping each executable separately)"
     }
   ]
 }

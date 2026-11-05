@@ -103,6 +103,7 @@ int main(int argc, char** argv) {
                             f"-I{ROOT / 'tests/fixtures/exit'}",
                             str(ROOT / "tests/linux_exit.cpp"),
                             str(ROOT / "port/src/base_exit.cpp"),
+                            str(ROOT / "port/src/title_update_exit.cpp"),
                             "-o", str(executable)], check=True)
             subprocess.run([str(executable)], check=True)
 
@@ -365,13 +366,39 @@ class TitleUpdateTests(unittest.TestCase):
             digest = hashlib.sha256(data).hexdigest()
             generated = root / "port/generated/update"
             generated.mkdir(parents=True)
+            config = root / "port/title_updates/update/config"
+            config.mkdir(parents=True)
+            (config.parent / "diablo3_manifest.toml").write_text("manifest")
+            (config / "hints.toml").write_text("one")
             with mock.patch.object(codegen_title_update, "ROOT", root), mock.patch.object(codegen_title_update, "USA_UPDATE_SHA256", digest), mock.patch.object(codegen_title_update, "patch_generated") as patch:
                 with self.assertRaisesRegex(ValueError, "missing or stale"):
                     codegen_title_update.generate_update(game, "rexglue.exe", True)
                 patch.assert_not_called()
-                (generated / "source-xex.sha256").write_text(digest)
+                # A stamp from before the inputs were recorded (only the executable hash) is stale.
+                (generated / codegen_title_update.STAMP).write_text(digest)
+                with self.assertRaisesRegex(ValueError, "missing or stale"):
+                    codegen_title_update.generate_update(game, "rexglue.exe", True)
+                (generated / codegen_title_update.STAMP).write_text(
+                    codegen_title_update.json.dumps(codegen_title_update.codegen_inputs("update")))
                 self.assertEqual(codegen_title_update.generate_update(game, "rexglue.exe", True), generated)
                 patch.assert_called_once_with(generated, "usa")
+                # Editing a function hint makes the generated sources stale (M2).
+                (config / "hints.toml").write_text("two")
+                self.assertFalse(codegen_title_update.stamp_current("update"))
+                (config / "hints.toml").write_text("one")
+                self.assertTrue(codegen_title_update.stamp_current("update"))
+                with mock.patch.object(codegen_title_update.sdk_patches, "lock",
+                                       return_value={"commit": "0" * 40}):
+                    self.assertFalse(codegen_title_update.stamp_current("update"))
+
+    def test_cmake_checks_the_stamp_codegen_writes(self):
+        # port/title_updates/rexglue.cmake refuses to configure unless the stamp names the
+        # verified executable; it must read the file and field that generate() writes.
+        cmake = (ROOT / "port/title_updates/rexglue.cmake").read_text()
+        self.assertIn(f'"${{_generated}}/{codegen_title_update.STAMP}"', cmake)
+        self.assertIn('GET "${_update_stamp_json}" executable)', cmake)
+        self.assertIn("executable", codegen_title_update.codegen_inputs("update"))
+        self.assertIn(f'"{codegen_title_update.USA_UPDATE_SHA256}"', cmake)
 
     def test_failed_update_regeneration_invalidates_existing_stamp(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -383,7 +410,7 @@ class TitleUpdateTests(unittest.TestCase):
             digest = hashlib.sha256(data).hexdigest()
             generated = root / "port/generated/update"
             generated.mkdir(parents=True)
-            stamp = generated / "source-xex.sha256"
+            stamp = generated / codegen_title_update.STAMP
             stamp.write_text(digest)
             manifest = root / "port/title_updates/update"
             manifest.mkdir(parents=True)
@@ -598,7 +625,7 @@ class BuildClientTests(unittest.TestCase):
                          ["Build Base (codegen and compile)", "Build Update (no extras) (codegen and compile)"])
         for regenerate, stamped in ((False, True), (True, True), (False, False)):
             args.regenerate = regenerate
-            with mock.patch.object(build_client, "stamp_matches", return_value=stamped), \
+            with mock.patch.object(build_client.codegen_title_update, "stamp_current", return_value=stamped), \
                     mock.patch.object(build_client, "run") as run:
                 build_client.build_variant(args, "update-plain")
             command = [str(arg) for arg in run.call_args.args]
@@ -631,6 +658,198 @@ class SdkStampTests(unittest.TestCase):
             (root / "patches/common/a.patch").write_bytes(b"two\n")
             self.assertNotEqual(first, sdk_patches.patch_hash("linux"))
         self.assertEqual(before, sdk_patches.patch_hash("linux"))
+
+    def test_codegen_patch_hash_covers_only_code_generator_sections(self):
+        with mock.patch.object(sdk_patches, "ROOT", pathlib.Path(tempfile.mkdtemp())) as root:
+            self.addCleanup(shutil.rmtree, root, True)
+            patch = root / "patches/common/a.patch"
+            patch.parent.mkdir(parents=True)
+            runtime = "--- a/src/kernel/x.cpp\n+++ b/src/kernel/x.cpp\n@@ -1 +1 @@\n-a\n+b\n"
+            codegen = "--- a/src/codegen/y.cpp\n+++ b/src/codegen/y.cpp\n@@ -1 +1 @@\n-c\n+d\n"
+            patch.write_text(runtime + codegen)
+            first = sdk_patches.codegen_patch_hash()
+            patch.write_text(runtime.replace("+b", "+B") + codegen)
+            self.assertEqual(first, sdk_patches.codegen_patch_hash())
+            patch.write_text(runtime + codegen.replace("+d", "+D"))
+            self.assertNotEqual(first, sdk_patches.codegen_patch_hash())
+
+
+def git(*args, cwd):
+    return subprocess.run(["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+                           "-c", "core.autocrlf=false", *args], cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+@unittest.skipUnless(shutil.which("git"), "git required")
+class SdkCheckoutTests(unittest.TestCase):
+    """H1/H2: a failed, cancelled or outdated SDK build must never block the next one."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name)
+        self.upstream = self.root / "upstream"
+        self.upstream.mkdir()
+        git("init", "-q", cwd=self.upstream)
+        self.source = self.upstream / "profile.cpp"
+        self.source.write_bytes(b"one\ntwo\nthree\nfour\nfive\nsix\nseven\n")
+        git("add", ".", cwd=self.upstream)
+        git("commit", "-qm", "first", cwd=self.upstream)
+        self.first = git("rev-parse", "HEAD", cwd=self.upstream)
+        # Like rexglue-username.patch and rexglue-systemlink-net.patch: the second patch
+        # rewrites lines the first one needs as context, so "already applied" can't be detected.
+        self.patches = []
+        for old, new in ((b"three\n", b"THREE\n"), (b"two\n", b"TWO\n")):
+            text = self.source.read_bytes()
+            self.source.write_bytes(text.replace(old, new))
+            self.patches.append(self.root / f"{len(self.patches)}.patch")
+            self.patches[-1].write_bytes((git("diff", cwd=self.upstream) + "\n").encode())
+            git("commit", "-qam", "patch", cwd=self.upstream)
+        git("reset", "-q", "--hard", self.first, cwd=self.upstream)
+        self.sdk = self.root / "tools/sdk"
+        self.commands = []
+
+    def run_command(self, *args):
+        self.commands.append([str(arg) for arg in args])
+        subprocess.run([str(arg) for arg in args], check=True, capture_output=True)
+
+    def build(self, commit):
+        with mock.patch.object(sdk_patches, "lock", return_value={"repository": str(self.upstream),
+                                                                    "commit": commit}):
+            sdk_patches.checkout_pinned_sdk(self.sdk, self.run_command, config=("core.autocrlf=false",))
+        for patch in self.patches:
+            sdk_patches.apply_patch(self.sdk, patch)
+
+    def test_rebuild_after_failure_reapplies_patches(self):
+        self.build(self.first)
+        (self.sdk / "out").mkdir()  # ignored build output survives
+        (self.sdk / ".gitignore").write_text("out/\n")
+        (self.sdk / "added.cpp").write_text("copied source")
+        (self.sdk / "out/object.o").write_text("built")
+        self.build(self.first)  # the compile failed or was cancelled; run again
+        self.assertEqual((self.sdk / "profile.cpp").read_bytes(),
+                         b"one\nTWO\nTHREE\nfour\nfive\nsix\nseven\n")
+        self.assertFalse((self.sdk / "added.cpp").exists())
+        self.assertTrue((self.sdk / "out/object.o").exists())
+
+    def test_new_pin_is_fetched_into_an_existing_checkout(self):
+        self.build(self.first)
+        (self.upstream / "new.txt").write_text("new")
+        git("add", ".", cwd=self.upstream)
+        git("commit", "-qm", "second", cwd=self.upstream)
+        second = git("rev-parse", "HEAD", cwd=self.upstream)
+        self.build(second)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.sdk), second)
+        self.assertTrue((self.sdk / "new.txt").exists())
+
+    def test_interrupted_clone_is_discarded(self):
+        partial = self.sdk.with_name("sdk.partial")
+        (partial / ".git").mkdir(parents=True)
+        (partial / ".git/HEAD").write_text("half a clone")
+        self.build(self.first)
+        self.assertFalse(partial.exists())
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.sdk), self.first)
+
+    def test_unrelated_folder_is_not_replaced(self):
+        self.sdk.mkdir(parents=True)
+        (self.sdk / "notes.txt").write_text("mine")
+        with self.assertRaisesRegex(ValueError, "not a git checkout"):
+            self.build(self.first)
+        self.assertEqual((self.sdk / "notes.txt").read_text(), "mine")
+
+
+def fake_disc(path, files):
+    """Write a minimal XDVDFS image whose root holds `files` ({name: bytes})."""
+    sector, image = 34, bytearray(34 * 2048)
+    image[32 * 2048:32 * 2048 + 20] = b"MICROSOFT*XBOX*MEDIA"
+    table, entries = bytearray(), []
+    for name, data in files.items():
+        entries.append((name.encode(), sector, data))
+        sector += max(1, -(-len(data) // 2048))
+    offsets = []
+    for index, (name, _, _) in enumerate(entries):
+        offsets.append(len(table))
+        table += bytes(14 + len(name))
+        table += bytes(-len(table) % 4)
+    for index, (name, start, data) in enumerate(entries):
+        right = offsets[index + 1] // 4 if index + 1 < len(entries) else 0
+        struct.pack_into("<HHIIBB", table, offsets[index], 0, right, start, len(data), 0, len(name))
+        table[offsets[index] + 14:offsets[index] + 14 + len(name)] = name
+    table += bytes(-len(table) % 2048)
+    struct.pack_into("<II", image, 32 * 2048 + 20, 33, len(table))
+    image[33 * 2048:33 * 2048 + len(table)] = table[:2048]
+    for _, start, data in entries:
+        image += bytes(start * 2048 - len(image))
+        image += data + bytes(-len(data) % 2048)
+    path.write_bytes(bytes(image))
+
+
+class ExtractionTests(unittest.TestCase):
+    """H3 and M4: interrupted extractions resume; unsafe names never leave the folder."""
+
+    def setUp(self):
+        import extract_disc
+        self.extract_disc = extract_disc
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name)
+        self.files = {"Default.xex": bytes(range(256)) * 40, "small.bin": b"tiny"}
+        self.iso = self.root / "disc.iso"
+        fake_disc(self.iso, self.files)
+
+    def test_killed_extraction_resumes(self):
+        game = self.root / "game"
+        original = self.extract_disc.Disc.chunks
+
+        def killed(disc, sector, length):
+            for count, data in enumerate(original(disc, sector, length)):
+                if count == 2:
+                    raise KeyboardInterrupt  # stands in for taskkill /F or SIGTERM
+                yield data
+
+        with mock.patch.object(self.extract_disc, "CHUNK", 1024), \
+                mock.patch.object(self.extract_disc.Disc, "chunks", killed):
+            with self.assertRaises(KeyboardInterrupt):
+                self.extract_disc.extract(self.iso, game)
+        self.assertFalse((game / "Default.xex").exists())  # no truncated file under the real name
+        self.assertEqual((game / "Default.xex.part").stat().st_size, 2048)
+        self.assertEqual(self.extract_disc.bytes_to_extract(self.iso, game),
+                         sum(map(len, self.files.values())) - 2048)
+        with mock.patch.object(self.extract_disc, "CHUNK", 1024):
+            self.extract_disc.extract(self.iso, game)
+        for name, data in self.files.items():
+            self.assertEqual((game / name).read_bytes(), data)
+            self.assertFalse((game / (name + ".part")).exists())
+        self.assertTrue((game / "disc-manifest.json").is_file())
+        self.assertEqual(self.extract_disc.bytes_to_extract(self.iso, game), 0)
+
+    def test_file_truncated_by_older_versions_is_completed(self):
+        game = self.root / "game"
+        game.mkdir()
+        (game / "Default.xex").write_bytes(self.files["Default.xex"][:1000])
+        self.extract_disc.extract(self.iso, game)
+        self.assertEqual((game / "Default.xex").read_bytes(), self.files["Default.xex"])
+
+    def test_different_existing_file_is_never_replaced(self):
+        game = self.root / "game"
+        game.mkdir()
+        for content in (b"modded", self.files["small.bin"] + b"more"):
+            (game / "small.bin").write_bytes(content)
+            with self.assertRaisesRegex(ValueError, "small.bin"):
+                self.extract_disc.extract(self.iso, game)
+            self.assertEqual((game / "small.bin").read_bytes(), content)
+
+    def test_unsafe_names_are_rejected(self):
+        for name in ("C:evil.txt", "file:stream", "NUL", "con.txt", "Com1.dat", "LPT9", "trail.",
+                     "trail ", "a?b", "a*b", 'a"b', "a<b", "a|b", "tab\tname", "", ".", "..", "a/b", "a\\b"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.extract_disc.check_name(name)
+        for name in ("Default.xex", "enUS_Act5.cpk", "CPKs", "CONSOLE.txt", "nul_data", ".hidden"):
+            self.assertEqual(self.extract_disc.check_name(name), name)
+        with self.assertRaisesRegex(ValueError, "Unsafe"):
+            fake_disc(self.iso, {"C:evil.txt": b"x"})
+            self.extract_disc.extract(self.iso, self.root / "game")
+        self.assertFalse((self.root / "game" / "C:evil.txt").exists())
 
 
 if __name__ == "__main__":

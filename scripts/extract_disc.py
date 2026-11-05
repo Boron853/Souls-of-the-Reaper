@@ -7,6 +7,65 @@ import struct
 from pathlib import Path
 
 CHUNK = 4 * 1024 * 1024
+# Names Windows maps to devices, with or without an extension ("NUL", "con.txt").
+RESERVED_NAMES = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{n}' for n in range(1, 10)), *(f'LPT{n}' for n in range(1, 10))}
+
+
+def check_name(name):
+    """Return `name` if it is one plain file name on every host, else raise ValueError.
+
+    On Windows a name like "C:x" (drive-relative), "a:b" (alternate data stream),
+    "NUL" (device) or "x." (trailing dot is dropped) would write somewhere other
+    than the extraction folder, so disc and package names must avoid them.
+    """
+    if (not name or name in ('.', '..') or name[-1] in '. '
+            or any(c in '<>:"/\\|?*' or ord(c) < 32 or ord(c) == 127 for c in name)
+            or name.split('.')[0].rstrip(' ').upper() in RESERVED_NAMES):
+        raise ValueError(f'Unsafe filename: {name!r}')
+    return name
+
+
+def inside(destination, relative):
+    """destination / relative, refusing anything that resolves outside destination."""
+    target = destination / relative
+    if not target.resolve().is_relative_to(destination.resolve()):
+        raise ValueError(f'Unsafe path: {relative}')
+    return target
+
+
+def store(target, chunks, label):
+    """Write `chunks` to `target` and return their SHA-256, resuming what an interrupted run left.
+
+    New data goes to `<name>.part` and is renamed when complete, so a finished name
+    always holds a whole file. Data already present (a `.part` file, or a file that
+    older versions left truncated in place) is kept while it matches the source byte
+    for byte and the rest is appended; content that differs is reported, never replaced.
+    """
+    partial = target.with_name(target.name + '.part')
+    path = target if target.exists() else partial
+    existing = path.exists()
+    digest = hashlib.sha256()
+    with path.open('r+b' if existing else 'xb') as stream:
+        appending = not existing
+        for data in chunks:
+            digest.update(data)
+            if not appending:
+                have = stream.read(len(data))
+                if have != data[:len(have)]:
+                    raise ValueError(f'Existing file differs: {label}; move it aside and run again')
+                if len(have) == len(data):
+                    continue
+                appending = True
+                stream.seek(0, 2)
+                data = data[len(have):]
+            stream.write(data)
+        if not appending and stream.read(1):
+            raise ValueError(f'Existing file too long: {label}; move it aside and run again')
+    if path == partial:
+        partial.replace(target)
+    else:
+        partial.unlink(missing_ok=True)
+    return digest.hexdigest()
 
 
 class Disc:
@@ -17,7 +76,8 @@ class Disc:
         source.seek(0, 2)
         self.size = source.tell()
         bases = (0, 0x2080000, 0xFD90000)
-        matches = [b for b in bases if self.read(b + 32 * 2048, 20) == b'MICROSOFT*XBOX*MEDIA']
+        matches = [b for b in bases if b + 32 * 2048 + 20 <= self.size
+                   and self.read(b + 32 * 2048, 20) == b'MICROSOFT*XBOX*MEDIA']
         if len(matches) != 1:
             raise ValueError(f'Expected one game partition, found {matches}')
         self.base = matches[0]
@@ -50,9 +110,7 @@ class Disc:
                 left, right, sec, length, attr, count = struct.unpack_from('<HHIIBB', table, offset)
                 if offset + 14 + count > len(table):
                     raise ValueError('Truncated name')
-                name = table[offset + 14:offset + 14 + count].decode('ascii')
-                if not name or name in ('.', '..') or any(c in name for c in '/\\\0'):
-                    raise ValueError('Unsafe filename')
+                name = check_name(table[offset + 14:offset + 14 + count].decode('ascii'))
                 if left:
                     yield from node(left * 4)
                 path = relative / name
@@ -91,35 +149,44 @@ def file_sha256(iso, name):
     raise ValueError(f'{name} not found on disc')
 
 
+def bytes_to_extract(iso, destination):
+    """Bytes extract() still has to write: data already present (complete or partial) counts as written."""
+    remaining = 0
+    with iso.open('rb') as source:
+        for path, is_dir, _, length in Disc(source).entries():
+            if is_dir:
+                continue
+            target = destination / path
+            present = max((p.stat().st_size for p in (target, target.with_name(target.name + '.part'))
+                           if p.is_file()), default=0)
+            remaining += length - min(present, length)
+    return remaining
+
+
 def extract(iso, destination):
+    """Extract the game partition into `destination`; rerunning resumes an interrupted extraction."""
     records = []
     with iso.open('rb') as source:
         disc = Disc(source)
         destination.mkdir(parents=True, exist_ok=True)
         for path, is_dir, sector, length in disc.entries():
-            target = destination / path
+            target = inside(destination, path)
             if is_dir:
                 target.mkdir(parents=True, exist_ok=True)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256()
-            # Existing files are checked, never silently replaced.
-            existing = target.exists()
-            with target.open('rb' if existing else 'xb') as stream:
-                for data in disc.chunks(sector, length):
-                    if existing:
-                        if stream.read(len(data)) != data:
-                            raise ValueError(f'Existing file differs: {path}')
-                    else:
-                        stream.write(data)
-                    digest.update(data)
-                if existing and stream.read(1):
-                    raise ValueError(f'Existing file too long: {path}')
-            records.append(dict(path=path.as_posix(), size=length, sector=sector,
-                                sha256=digest.hexdigest()))
+            digest = store(target, disc.chunks(sector, length), path)
+            records.append(dict(path=path.as_posix(), size=length, sector=sector, sha256=digest))
             print(f'{path}: {length:,} bytes', flush=True)
         manifest = dict(source=iso.name, source_size=disc.size, partition_offset=disc.base, files=records)
-    (destination / 'disc-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    # Written last (and atomically): its presence marks a complete extraction.
+    write_json(destination / 'disc-manifest.json', manifest)
+
+
+def write_json(path, value):
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(json.dumps(value, indent=2) + '\n')
+    temporary.replace(path)
 
 
 if __name__ == '__main__':

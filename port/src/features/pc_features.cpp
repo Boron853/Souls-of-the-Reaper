@@ -8,6 +8,7 @@
 #include "pc_features.h"
 #include "pc_features_logic.h"
 #include "pc_features_version.h"
+#include "render_scale.h"
 
 #include <rex/cvar.h>
 #include <rex/runtime.h>
@@ -33,17 +34,21 @@ constexpr std::string_view kTooltipKey = "D3PC:RenderResolutionTooltip";
 constexpr std::string_view kAutosaveKey =
     "ConsoleUI:AutosaveWarningScreenText_XBox360";
 
-// Same masking as scripts/find_feature_addresses.py: branch targets and D-form
-// immediates vary between builds, everything else must match.
+// Same masking as scripts/find_feature_addresses.py mask_word: branch targets
+// and D/DS-form displacements and immediates vary between builds; li constants,
+// the ld/ldu/lwa and std/stdu sub-opcodes and everything else must match.
 constexpr uint32_t MaskWord(uint32_t word) {
   const uint32_t op = word >> 26;
   if (op == 18)
     return word & ~0x03FFFFFCu;
   if (op == 16)
     return word & ~0x0000FFFCu;
+  if (op == 14 && ((word >> 16) & 31) == 0) // li rD,SIMM
+    return word;
+  if (op == 58 || op == 62) // DS-form: keep the low two sub-opcode bits
+    return word & ~0x0000FFFCu;
   if (op == 7 || op == 8 || op == 10 || op == 11 || op == 12 || op == 13 ||
-      op == 14 || op == 15 || (op >= 24 && op <= 29) ||
-      (op >= 32 && op <= 55) || op == 58 || op == 62)
+      op == 14 || op == 15 || (op >= 24 && op <= 29) || (op >= 32 && op <= 55))
     return word & ~0xFFFFu;
   return word;
 }
@@ -89,24 +94,12 @@ struct Settings {
   std::filesystem::path path;
 
   Settings() {
-#ifdef _WIN32
-    // The older Windows SDK exposes the axis settings used by its launcher.
-    active_x = std::stoi(rex::cvar::GetFlagByName("draw_resolution_scale_x"));
-    active_y = std::stoi(rex::cvar::GetFlagByName("draw_resolution_scale_y"));
-    const auto shared = active_x;
-#else
-    const auto shared = std::stoi(rex::cvar::GetFlagByName("resolution_scale"));
-    const auto axis = [&](const char *name) {
-      return rex::cvar::HasNonDefaultValue(name)
-                 ? std::stoi(rex::cvar::GetFlagByName(name))
-                 : shared;
-    };
-    active_x = axis("draw_resolution_scale_x");
-    active_y = axis("draw_resolution_scale_y");
-#endif
+    const auto active = d3::ConfiguredRenderScale();
+    active_x = active.x;
+    active_y = active.y;
     // Use the resolved directory when the executable is launched directly too.
     path = rex::Runtime::instance()->user_data_root() / d3::features::kSettingsFile;
-    selected = d3::features::ReadRenderScale(path, std::clamp(shared, 1, 3));
+    selected = d3::features::ReadRenderScale(path, std::clamp(active_x, 1, 3));
   }
 
   std::string title() const {

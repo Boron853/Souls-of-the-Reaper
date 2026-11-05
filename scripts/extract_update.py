@@ -6,8 +6,9 @@ and stfs_container_device.cc. Writable/dual-table packages are rejected.
 """
 import argparse
 import hashlib
-import json
 from pathlib import Path
+
+from extract_disc import check_name, inside, store, write_json
 
 
 def extract(package, destination):
@@ -56,15 +57,15 @@ def extract(package, destination):
             entry = table[offset:offset + 64]
             if not entry[0]:
                 break
-            name = entry[:entry[40] & 63].decode('ascii')
-            if not name or name in ('.', '..') or any(c in name for c in '/\\\0'):
-                raise ValueError('Unsafe filename')
+            if entry[40] & 63 > 40:  # the name field is 40 bytes
+                raise ValueError('Invalid filename length')
+            name = check_name(entry[:entry[40] & 63].decode('ascii'))
             parent = int.from_bytes(entry[50:52], 'big')
             if parent != 65535 and parent not in directories:
                 raise ValueError('Invalid directory parent')
             relative = (Path() if parent == 65535 else paths[parent]) / name
             paths.append(relative)
-            target = destination / relative
+            target = inside(destination, relative)
             if entry[40] & 128:
                 directories.add(len(paths) - 1)
                 target.mkdir(parents=True, exist_ok=True)
@@ -81,21 +82,16 @@ def extract(package, destination):
             if len(seen) != int.from_bytes(entry[44:47], 'little'):
                 raise ValueError('Allocated block count mismatch')
             target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                if target.read_bytes() != payload:
-                    raise ValueError(f'Existing file differs: {relative}')
-            else:
-                with target.open('xb') as output:
-                    output.write(payload)
-            files.append(dict(path=relative.as_posix(), size=length,
-                              sha256=hashlib.sha256(payload).hexdigest()))
+            # Resumes a file an interrupted run left partly written; never replaces different content.
+            digest = store(target, [bytes(payload)], relative)
+            files.append(dict(path=relative.as_posix(), size=length, sha256=digest))
             print(f'{relative}: {length:,} bytes')
     manifest = dict(source=package.name, sha256=hashlib.sha256(data).hexdigest(),
                     title_id=f'{number(0x360, 4):08X}', media_id=f'{number(0x354, 4):08X}',
                     version=number(0x358, 4), base_version=number(0x35C, 4),
                     block_hashes_verified=True, files=files)
     destination.mkdir(parents=True, exist_ok=True)
-    (destination / 'update-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    write_json(destination / 'update-manifest.json', manifest)
 
 
 if __name__ == '__main__':

@@ -16,6 +16,30 @@
     const { lang, path, fps, scale, vkscale, res, display, mouse, vkpath, vsync, backend } = state;
     return { lang, path, fps, scale, vkscale, res, display, mouse, vkpath, vsync, backend, build: curBuild() ? curBuild().id : null };
   };
+  function showStatus(text) { status.textContent = text; }
+
+  // Installed before the rest of the setup: the window has no decorations, so
+  // if anything below throws, the page's close and drag buttons must still work.
+  window.LAUNCHER_HOST = {
+    async post(message) {
+      try {
+        if (message.type !== 'play') { await invoke('window_action', { action: message.type }); return; }
+        // Only Save applies the panel fields; Play keeps the saved folders.
+        settings.uiState = uiState();
+        // The player name is a main-screen row; keep it with the other saved settings.
+        const name = String(message.config.username ?? '').trim();
+        if (name !== settings.username) {
+          settings.username = name;
+          invoke('save_settings', { settings }).catch(error => showStatus(String(error)));
+        }
+        const button = document.getElementById('playBtn');
+        button.disabled = true; showStatus('Starting game…');
+        try { await invoke('launch_game', { settings, options: message.config }); }
+        finally { button.disabled = false; }
+      } catch (error) { showStatus(String(error)); }
+    },
+  };
+
   // Display server: three buttons around a hidden field that readSettings/fillSettings use.
   const videoField = document.getElementById('videoDriver');
   const videoButtons = [...document.querySelectorAll('[data-video]')];
@@ -41,7 +65,6 @@
       settings[key] = key === 'vulkanDevice' ? (value === '' ? -1 : Number(value)) : value;
     });
   }
-  function showStatus(text) { status.textContent = text; }
 
   // External links (the font credit under Play) open in the default browser;
   // a Tauri webview ignores target="_blank" on its own.
@@ -83,7 +106,12 @@
   const optExtras = document.getElementById('optExtras');
   const buildStep = document.getElementById('buildStep');
   const buildLog = document.getElementById('buildLog');
+  const startButton = document.getElementById('startBuild');
   const logLines = [];
+  // What the panel runs, from the click that starts it until it ends: 'build'
+  // (its tool check and download prompt included) or 'install'. Set before the
+  // first await so a second click is ignored; the host turns one away too.
+  let job = null;
   if (caps.platform === 'windows') {
     // build_windows.py finds CMake, Ninja and Clang (Visual Studio, LLVM) by itself.
     document.getElementById('cmakeLabel').hidden = true;
@@ -148,8 +176,9 @@
   const wingetRow = document.getElementById('wingetRow');
   function showWinget(report) {
     const missing = report && report.winget ? report.tools.filter(t => !t.found && t.winget) : [];
-    wingetRow.hidden = !missing.length;
-    if (!missing.length) return;
+    // A check that finishes while winget runs must not offer a second install.
+    wingetRow.hidden = job === 'install' || !missing.length;
+    if (wingetRow.hidden) return;
     const vs = missing.some(t => t.id === 'msvc');
     document.getElementById('wingetNote').textContent =
       `Installs ${missing.map(t => t.label).join(', ')} with winget and accepts their license agreements. ` +
@@ -157,6 +186,8 @@
       (vs ? ' Visual Studio Build Tools is several GB and shows its own progress window.' : '');
   }
   document.getElementById('installTools').addEventListener('click', async () => {
+    if (job) return;
+    job = 'install';
     logLines.length = 0; buildLog.textContent = '';
     buildStep.textContent = 'Installing build tools…';
     setBuilding(true);
@@ -166,7 +197,7 @@
     let report = null;
     try { report = await invoke('install_tools', { cmake: document.getElementById('buildCmake').value.trim() }) || null; }
     catch (error) { buildStep.textContent = String(error); }
-    finally { setBuilding(false); }
+    finally { job = null; setBuilding(false); }
     if (!report) { checkTools(); return; }
     renderTools(report);
     buildStep.textContent = report.ready ? 'The build tools are installed. Press Build to continue.'
@@ -179,6 +210,9 @@
     renderTools(report);
     return report;
   }
+  // Answers the open download prompt, if any. Closing the panel answers no, so
+  // the request it was asked for is dropped and a later Build starts afresh.
+  let answerPrompt = null;
   // Resolves true when the user agrees to download what is missing: the game
   // sources (a launcher outside a checkout) and/or the ReXGlue SDK.
   function askDownloads(report) {
@@ -190,13 +224,10 @@
     document.getElementById('sdkPromptText').textContent =
       `Compiling the game needs ${parts.join(' and ')}. Download ${parts.length > 1 ? 'them' : 'it'} and continue?`;
     sdkPrompt.hidden = false;
-    document.getElementById('startBuild').disabled = true;
     return new Promise(resolve => {
-      const done = answer => {
-        sdkPrompt.hidden = true; document.getElementById('startBuild').disabled = false; resolve(answer);
-      };
-      document.getElementById('sdkYes').onclick = () => done(true);
-      document.getElementById('sdkNo').onclick = () => done(false);
+      answerPrompt = answer => { answerPrompt = null; sdkPrompt.hidden = true; resolve(answer); };
+      document.getElementById('sdkYes').onclick = () => answerPrompt?.(true);
+      document.getElementById('sdkNo').onclick = () => answerPrompt?.(false);
     });
   }
   document.getElementById('recheckTools').addEventListener('click', checkTools);
@@ -207,7 +238,8 @@
     checkTools();
   }
   function setBuilding(on) {
-    document.getElementById('startBuild').hidden = on;
+    startButton.hidden = on;
+    document.getElementById('recheckTools').disabled = on;
     // The running build's log sits right after the tool list and takes its place.
     document.getElementById('toolsLabel').hidden = on;
     document.getElementById('cancelBuild').hidden = !on;
@@ -228,7 +260,10 @@
     else if (payload !== '::done::') log(payload);
   });
   document.getElementById('openBuild').addEventListener('click', openBuild);
-  document.getElementById('closeBuild').addEventListener('click', () => { buildPanel.hidden = true; });
+  document.getElementById('closeBuild').addEventListener('click', () => {
+    buildPanel.hidden = true;
+    answerPrompt?.(false);
+  });
   buildPanel.querySelectorAll('[data-pick]').forEach(button => button.addEventListener('click', async () => {
     const kind = button.dataset.pick;
     try {
@@ -243,7 +278,13 @@
     buildStep.textContent = 'Cancelling…';
     invoke('cancel_build').catch(error => { buildStep.textContent = String(error); });
   });
-  document.getElementById('startBuild').addEventListener('click', async () => {
+  startButton.addEventListener('click', async () => {
+    if (job) return;
+    job = 'build'; startButton.disabled = true;
+    try { await runBuild(); }
+    finally { job = null; startButton.disabled = false; }
+  });
+  async function runBuild() {
     Object.keys(buildInputs).forEach(key => { settings[key] = document.getElementById(key).value.trim(); });
     settings.uiState = uiState();
     const request = {
@@ -277,31 +318,11 @@
     } catch (error) {
       buildStep.textContent = String(error);
     } finally { setBuilding(false); }
-  });
+  }
   // Same signal as the launcher's update autoselect (caps.updateInstalled): once the
   // update is there, the Build panel opens on update instead of Base so a rebuild
   // does not make both. A saved package path counts too. Applied once, so a
   // deliberate Base tick later is left alone.
   if (caps.updateInstalled || (settings.buildTitleUpdate ?? '').trim()) titleUpdateAdded();
   if (!caps.builds.length && caps.canBuild) openBuild();
-
-  window.LAUNCHER_HOST = {
-    async post(message) {
-      try {
-        if (message.type !== 'play') { await invoke('window_action', { action: message.type }); return; }
-        // Only Save applies the panel fields; Play keeps the saved folders.
-        settings.uiState = uiState();
-        // The player name is a main-screen row; keep it with the other saved settings.
-        const name = String(message.config.username ?? '').trim();
-        if (name !== settings.username) {
-          settings.username = name;
-          invoke('save_settings', { settings }).catch(error => showStatus(String(error)));
-        }
-        const button = document.getElementById('playBtn');
-        button.disabled = true; showStatus('Starting game…');
-        try { await invoke('launch_game', { settings, options: message.config }); }
-        finally { button.disabled = false; }
-      } catch (error) { showStatus(String(error)); }
-    },
-  };
 })();

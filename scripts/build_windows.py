@@ -10,16 +10,14 @@ clang 22+, Git and Python on the machine.
 """
 import argparse
 import hashlib
-import json
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
 
-from apply_generated_patches import patch_generated
-from codegen_title_update import generate_update
-from sdk_patches import apply_common_patches, apply_patch, checkout_pinned_sdk, write_stamp
+from codegen_title_update import generate
+from sdk_patches import apply_common_patches, apply_patch, checkout_pinned_sdk, clear_stamp, write_stamp
 from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -75,6 +73,7 @@ def build_sdk(args):
         "-DREXGLUE_USE_D3D12=ON", "-DREXGLUE_USE_VULKAN=ON", cwd=sdk)
     build = sdk / "out/build/win-amd64"
     run("cmake", "--build", build, "--config", "RelWithDebInfo", "--parallel", args.jobs)
+    clear_stamp(args.sdk_prefix)
     run("cmake", "--install", build, "--config", "RelWithDebInfo", "--prefix", args.sdk_prefix)
     write_stamp(args.sdk_prefix, "win")
     return sdk / "out/win-amd64/RelWithDebInfo/rexgluerd.exe"
@@ -118,24 +117,7 @@ def main():
         expected = USA_UPDATE_SHA256 if args.title_update else DISC_SHA256
         if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
             raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
-        generated = ROOT / "port/generated" / ("update" if args.title_update else "base")
-        if args.title_update:
-            generate_update(args.game_dir, rexglue, args.skip_codegen)
-        else:
-            if not args.skip_codegen:
-                manifest_dir = ROOT / "port/base"
-                manifest = (manifest_dir / "diablo3_manifest.toml").read_text()
-                for suffix in ("", "/Default.xex"):
-                    manifest = manifest.replace(json.dumps("../../game" + suffix),
-                                                json.dumps(args.game_dir.as_posix() + suffix, ensure_ascii=False))
-                local_manifest = manifest_dir / "local_manifest.toml"
-                local_manifest.write_text(manifest, encoding="utf-8")
-                # An interrupted regeneration must not leave a valid reuse stamp.
-                (generated / "source-xex.sha256").unlink(missing_ok=True)
-                run(rexglue, "codegen", local_manifest)
-                generated.mkdir(parents=True, exist_ok=True)
-                (generated / "source-xex.sha256").write_text(expected + "\n")
-            patch_generated(generated)
+        generate("update" if args.title_update else "base", args.game_dir, rexglue, args.skip_codegen)
         variant = ("update-" if args.title_update else "") + ("" if args.extra_features else "plain-")
         build = ROOT / f"port/out/build/win-amd64-{variant}relwithdebinfo"
         options = [f"-DSOULS_ENABLE_EXTRA_FEATURES={'ON' if args.extra_features else 'OFF'}",

@@ -2208,7 +2208,7 @@ index 5a572ce..373a724 100644
        [device_id_ptr]() -> X_RESULT {
          // NOTE: 0x00000001 is our dummy device ID from xam_content.cc
 diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
-index 8778066..aafe053 100644
+index 8778066..4fd165d 100644
 --- a/src/kernel/xam/xam_user.cpp
 +++ b/src/kernel/xam/xam_user.cpp
 @@ -12,6 +12,7 @@
@@ -2254,16 +2254,16 @@ index 8778066..aafe053 100644
 +// XamShowSigninUI). Indexed by slot = user_index - 1.
 +static std::atomic<bool> d3_guest_signed_in[kMaxGuestSlots];
 +
-+// Distinct-but-valid guest XUIDs (profile xuid's low 32 bits bumped by 1/2/3). Kept in
-+// the same high bytes so each passes D3's "you may not play" xuid mask check
++// Distinct-but-valid guest XUIDs: player 1's xuid with its low 32 bits bumped by 1/2/3.
++// Kept in the same high bytes so each passes D3's "you may not play" xuid mask check
 +// (0x00C0000000000000). Distinct low 32 bits let the content layer tell every local
 +// player apart even when the game passes a 32-bit-truncated xuid, so each guest gets
-+// its OWN separate save directory (.../B13EBABEBABEBABF/, .../...BAC0/, .../...BAC1/).
-+static constexpr uint64_t kD3GuestXuids[kMaxGuestSlots] = {
-+    0xB13EBABEBABEBABFull,  // player 2 (user_index 1)
-+    0xB13EBABEBABEBAC0ull,  // player 3 (user_index 2)
-+    0xB13EBABEBABEBAC1ull,  // player 4 (user_index 3)
-+};
++// its OWN separate save directory (.../B13EBABEBABEBABF/, .../...BAC0/, .../...BAC1/
++// for System Link instance 0). Each System Link instance owns a block of four xuids
++// (user_profile.cpp), so these never match another instance's player 1 or guests.
++static uint64_t GuestXuid(uint32_t slot) {
++  return REX_KERNEL_STATE()->user_profile()->xuid() + 1 + slot;
++}
 +
 +// True when the given guest slot (0..2, i.e. user_index-1) should be reported as
 +// signed in. External linkage (declared in private.h) so the content layer can query
@@ -2272,7 +2272,7 @@ index 8778066..aafe053 100644
 +  return slot < kMaxGuestSlots && d3_guest_signed_in[slot].load(std::memory_order_relaxed);
 +}
 +
-+uint64_t D3GuestXuid(uint32_t slot) { return slot < kMaxGuestSlots ? kD3GuestXuids[slot] : 0; }
++uint64_t D3GuestXuid(uint32_t slot) { return slot < kMaxGuestSlots ? GuestXuid(slot) : 0; }
 +
 +// A user_index we must answer for: P1 (0) always, any guest slot that's active.
 +static inline bool D3UserPresent(uint32_t user_index) {
@@ -2284,7 +2284,7 @@ index 8778066..aafe053 100644
 +// else P1.
 +uint64_t D3ContentXuidForUser(uint32_t user_index) {
 +  if (user_index >= 1 && user_index <= kMaxGuestSlots && D3GuestActive(user_index - 1)) {
-+    return kD3GuestXuids[user_index - 1];
++    return GuestXuid(user_index - 1);
 +  }
 +  return REX_KERNEL_STATE()->user_profile()->xuid();
 +}
@@ -2302,8 +2302,8 @@ index 8778066..aafe053 100644
 +  // active", which keeps single-player and the existing multi-hero flow byte-for-byte
 +  // unchanged) -> player 1.
 +  for (uint32_t slot = 0; slot < kMaxGuestSlots; ++slot) {
-+    if (D3GuestActive(slot) && requested_low == static_cast<uint32_t>(kD3GuestXuids[slot])) {
-+      return kD3GuestXuids[slot];
++    if (D3GuestActive(slot) && requested_low == static_cast<uint32_t>(GuestXuid(slot))) {
++      return GuestXuid(slot);
 +    }
 +  }
 +  return profile;
@@ -2319,7 +2319,7 @@ index 8778066..aafe053 100644
 -    if (user_index == 0) {
 +    if (D3UserPresent(user_index)) {
 +      const bool is_guest = user_index >= 1 && user_index <= kMaxGuestSlots;
-+      const uint64_t guest_xuid = is_guest ? kD3GuestXuids[user_index - 1] : 0;
++      const uint64_t guest_xuid = is_guest ? GuestXuid(user_index - 1) : 0;
        const auto& user_profile = REX_KERNEL_STATE()->user_profile();
        auto type = user_profile->type() & type_mask;
        if (type & (2 | 4)) {
@@ -2372,7 +2372,7 @@ index 8778066..aafe053 100644
 +  const bool is_guest = user_index >= 1 && user_index <= kMaxGuestSlots;
    const auto& user_profile = REX_KERNEL_STATE()->user_profile();
 -  info->xuid = user_profile->xuid();
-+  info->xuid = is_guest ? kD3GuestXuids[user_index - 1] : user_profile->xuid();
++  info->xuid = is_guest ? GuestXuid(user_index - 1) : user_profile->xuid();
    info->signin_state = user_profile->signin_state();
 -  rex::string::copy_truncating(info->name, user_profile->name(), rex::countof(info->name));
 +  const std::string guest_name = "Guest" + std::to_string(user_index + 1);
@@ -2424,9 +2424,9 @@ index 8778066..aafe053 100644
      const auto& user_profile = REX_KERNEL_STATE()->user_profile();
 -    assert_true(static_cast<uint64_t>(xuids[0]) == user_profile->xuid());
 +    assert_true(static_cast<uint64_t>(xuids[0]) == user_profile->xuid() ||
-+                static_cast<uint64_t>(xuids[0]) == kD3GuestXuids[0] ||
-+                static_cast<uint64_t>(xuids[0]) == kD3GuestXuids[1] ||
-+                static_cast<uint64_t>(xuids[0]) == kD3GuestXuids[2]);
++                static_cast<uint64_t>(xuids[0]) == GuestXuid(0) ||
++                static_cast<uint64_t>(xuids[0]) == GuestXuid(1) ||
++                static_cast<uint64_t>(xuids[0]) == GuestXuid(2));
      // TODO(gibbed): we assert here, but in case a title passes xuid_count > 1
      // until it's implemented for release builds...
      xuid_count = 1;

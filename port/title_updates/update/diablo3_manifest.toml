@@ -7,4 +7,5 @@ game_root = "../../../game-update"
 [entrypoint]
 file_path = "../../../game-update/Default.xex"
 out_directory_path = "../../generated/update"
-includes = ["config/thunks.toml", "config/callbacks.toml", "config/leaf-functions.toml", "config/branch-entry.toml"]
+includes = ["config/thunks.toml", "config/callbacks.toml", "config/leaf-functions.toml", "config/branch-entry.toml",
+            "config/indirect-entries.toml"]

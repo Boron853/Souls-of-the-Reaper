@@ -92,6 +92,19 @@ void LogSocketFailure(const char* name, uint32_t a, uint32_t b);
 // its own broadcasts, but a PC does, so the game would list itself as a joinable session.
 bool IsOwnPacket(const rex::system::N_XSOCKADDR_IN& from);
 
+// True when `address` (IPv4, network byte order) is on a network this PC is directly connected to,
+// or is a loopback address. System Link is LAN-only and runs with XNet security bypassed, so
+// nothing else vouches for a sender.
+bool IsOnLink(uint32_t address);
+
+// recvfrom(): the next datagram the guest should see. Datagrams a console would never receive are
+// dropped: this PC's own broadcasts and anything from outside its directly connected networks. A
+// dropped datagram is removed even when the guest only peeked (MSG_PEEK). When nothing else is
+// waiting, returns -1 with the host error set to WOULDBLOCK, so a caller that select()ed first
+// does not block on a datagram that is gone. Otherwise behaves like XSocket::RecvFrom.
+int RecvFrom(rex::system::XSocket* socket, uint8_t* buf, uint32_t len, uint32_t flags,
+             rex::system::N_XSOCKADDR_IN* from, uint32_t* from_len);
+
 // True for the first few hundred socket packets of a run, so the discovery protocol shows up in
 // the normal (info) log without flooding it.
 bool ShouldLogPacket();

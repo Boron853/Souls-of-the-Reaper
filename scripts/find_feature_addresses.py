@@ -9,17 +9,20 @@ confidence: review anything that is not "unique", and confirm with a build and
 an in-game check before relying on it.
 
 Matching: every instruction word has its relocatable fields masked (branch
-targets and D-form immediates), then the reference function body is searched for
-in the target image. Functions with no unique body match are resolved from a
+targets and D/DS-form displacements and immediates, except `li` constants and the
+ld/ldu/lwa, std/stdu sub-opcode), then the reference function body is searched
+for in the target image. Functions with no unique body match are resolved from a
 matched caller's call site; data addresses are re-derived from the lis/addi (or
 lis/load) pair, or from the return address of a call to a profile function.
 
-Needs the d3-image tool (scripts/d3-patch, built by build_client.py's patcher
-step or `cmake --build tools/d3-patch --target d3-image`).
+Needs the d3-image tool from scripts/d3-patch. build_client.py's patcher step
+configures tools/d3-patch but builds only d3-patch; build d3-image there with
+`cmake --build tools/d3-patch --target d3-image`.
 """
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import struct
@@ -43,15 +46,64 @@ class ProfileError(Exception):
 
 
 def mask_word(word):
-    """Zero the fields that change when code or data moves."""
+    """Zero the fields that change when code or data moves.
+
+    port/src/features/pc_features.cpp MaskWord applies the same rules to the
+    runtime check; change both together.
+    """
     op = word >> 26
     if op == 18:                    # b/bl/ba: LI
         return word & ~0x03FFFFFC
     if op == 16:                    # bc: BD
         return word & ~0x0000FFFC
-    if op in (7, 8, 10, 11, 12, 13, 14, 15) or 24 <= op <= 29 or 32 <= op <= 55 or op in (58, 62):
-        return word & ~0xFFFF       # D/DS-form immediates and displacements
+    if op == 14 and not (word >> 16) & 31:
+        return word                 # li rD,SIMM: a constant, never half of an address
+    if op in (58, 62):              # DS-form ld/ldu/lwa, std/stdu: keep the 2-bit sub-opcode
+        return word & ~0xFFFC
+    if op in (7, 8, 10, 11, 12, 13, 14, 15) or 24 <= op <= 29 or 32 <= op <= 55:
+        return word & ~0xFFFF       # D-form immediates and displacements
     return word
+
+
+# Extended opcodes (bits 1-10) of primary opcode 31, grouped by which GPR they write.
+X_WRITES_RA = {24, 26, 27, 28, 58, 60, 124, 284, 316, 412, 444, 476, 536, 539, 792, 794, 824, 922, 954, 986}
+X_WRITES_RT_RA = {53, 55, 119, 311, 373, 375}            # update-form integer loads
+X_WRITES_ONLY_RA = {181, 183, 247, 439, 567, 631, 695, 759}  # update-form stores, FP update loads
+X_WRITES_NONE = {0, 4, 32, 54, 68, 86, 144, 149, 150, 151, 199, 214, 215, 231, 246, 278, 407, 467,
+                 535, 598, 599, 662, 663, 727, 854, 918, 982, 983, 1014}
+VOLATILE_GPRS = {0} | set(range(3, 13))
+
+
+def writes_gpr(word, reg):
+    """Whether an instruction can change GPR `reg`; errs towards yes."""
+    op = word >> 26
+    rt, ra = (word >> 21) & 31, (word >> 16) & 31
+    if op in (16, 18, 19):          # branches; a call (LK=1) clobbers the volatile registers
+        return bool(word & 1) and reg in VOLATILE_GPRS
+    if op in (7, 8, 12, 13, 14, 15, 32, 34, 40, 42):
+        return rt == reg
+    if op in (33, 35, 41, 43):      # lwzu lbzu lhzu lhau
+        return reg in (rt, ra)
+    if op == 46:                    # lmw rD..r31
+        return reg >= rt
+    if op in (20, 21, 23, 24, 25, 26, 27, 28, 29, 30, 37, 39, 45, 49, 51, 53, 55):
+        return ra == reg            # rotates/logical immediates write RA; update stores/FP loads
+    if op == 58:                    # ld, ldu, lwa
+        return rt == reg or (word & 3 == 1 and ra == reg)
+    if op == 62:                    # std, stdu
+        return word & 3 == 1 and ra == reg
+    if op == 31:
+        xo = (word >> 1) & 0x3FF
+        if xo in X_WRITES_RA or (word >> 2) & 0x1FF == 413:   # ... and sradi
+            return ra == reg
+        if xo in X_WRITES_RT_RA:
+            return reg in (rt, ra)
+        if xo in X_WRITES_ONLY_RA:
+            return ra == reg
+        if xo in X_WRITES_NONE:
+            return False
+        return rt == reg
+    return False
 
 
 class Image:
@@ -63,11 +115,16 @@ class Image:
         self.words = struct.unpack(f">{len(data) // 4}I", data)
         self.masked = struct.pack(f">{len(self.words)}I", *map(mask_word, self.words))
 
+    def contains(self, address):
+        return address % 4 == 0 and 0 <= (address - self.base) // 4 < len(self.words)
+
     def index(self, address):
-        i = (address - self.base) // 4
-        if address % 4 or not 0 <= i < len(self.words):
-            raise ProfileError(f"address 0x{address:08X} outside image")
-        return i
+        if address % 4:
+            raise ProfileError(f"address 0x{address:08X} is not word-aligned")
+        if not self.contains(address):
+            raise ProfileError(f"address 0x{address:08X} is outside the image "
+                               f"(0x{self.base:08X}-0x{self.address(len(self.words)):08X})")
+        return (address - self.base) // 4
 
     def address(self, index):
         return self.base + index * 4
@@ -100,14 +157,23 @@ def load_image(d3_image, xex, scratch, name):
     return Image(out, int(fields["base"], 16))
 
 
+# Runtime-check window, at most the 12 words load_version.cmake allows.
 SIGNATURE_WORDS = 12
 
 
 def signature(image, address):
-    """Masked leading words of a function, as stored in profiles and checked at runtime."""
+    """Masked words of the fixed window at a function, as stored in profiles and checked at runtime.
+
+    The window does not stop at the first blr, which is not always the end of a
+    function (selector_count returns from three places). Functions shorter than
+    the window (one-instruction thunks, `li; b` stub-table entries, two-word
+    accessors) are followed by padding and adjacent code, which the window also
+    covers: their own words are rarely distinctive (string_destroy's `b` and
+    padding word match 12,671 places), and the check is only ever made at this
+    exact address of the profile's executable.
+    """
     start = image.index(address)
-    count = min(SIGNATURE_WORDS, image.body_length(start))
-    return [f"{mask_word(w):08X}" for w in image.words[start:start + count]]
+    return [f"{mask_word(w):08X}" for w in image.words[start:start + SIGNATURE_WORDS]]
 
 
 def masked_sequence(image, start, count):
@@ -135,6 +201,9 @@ def match_function(ref, tgt, address):
 
 
 def bl_target(image, index):
+    """Target of a `bl` at word `index`, or None (not a bl, or index outside the image)."""
+    if not 0 <= index < len(image.words):
+        return None
     word = image.words[index]
     if word >> 26 != 18 or not word & 1 or word & 2:
         return None
@@ -153,13 +222,19 @@ def resolve_from_caller(ref, tgt, profile_ref, matched, name, address):
         for k in range(ref.body_length(start)):
             if bl_target(ref, start + k) == address:
                 target = bl_target(tgt, matched[other][1] + k)
-                if target is not None:
+                if target is not None and tgt.contains(target):
                     return f"call-site in {other}+{k * 4:#x}", target
     return None
 
 
+PAIR_LOW_OPS = (14, 32, 34, 36, 38, 40, 42, 44)    # addi lwz lbz stw stb lhz lha sth
+
+
 def lis_pair_offsets(image, region_start, length, value):
-    """Yield (offset, kind) of lis/{addi,load} pairs producing `value` inside a region."""
+    """Yield (offset, kind) of lis/{addi,load} pairs producing `value` inside a region.
+
+    The scan for the low half stops once the lis register is overwritten.
+    """
     for k in range(length):
         word = image.words[region_start + k]
         if word >> 26 != 15:        # addis (lis when RA=0)
@@ -171,18 +246,21 @@ def lis_pair_offsets(image, region_start, length, value):
             if region_start + k + j >= len(image.words):
                 break
             nxt = image.words[region_start + k + j]
-            if (nxt >> 16) & 31 != reg or nxt >> 26 not in (14, 32, 34, 36, 38, 40, 42, 44):
-                continue
-            low = nxt & 0xFFFF
-            if low & 0x8000:
-                low -= 0x10000
-            if ((high << 16) + low) & 0xFFFFFFFF == value:
-                yield k, (k + j, nxt >> 26)
+            if (nxt >> 16) & 31 == reg and nxt >> 26 in PAIR_LOW_OPS:
+                low = nxt & 0xFFFF
+                if low & 0x8000:
+                    low -= 0x10000
+                if ((high << 16) + low) & 0xFFFFFFFF == value:
+                    yield k, (k + j, nxt >> 26)
+            if writes_gpr(nxt, reg):
+                break
 
 
 def derive_pair(tgt, region_start, k_hi, k_lo, op):
+    if not (0 <= region_start + k_hi < len(tgt.words) and 0 <= region_start + k_lo < len(tgt.words)):
+        return None
     hi_word, lo_word = tgt.words[region_start + k_hi], tgt.words[region_start + k_lo]
-    if hi_word >> 26 != 15 or lo_word >> 26 != op:
+    if hi_word >> 26 != 15 or lo_word >> 26 != op or (lo_word >> 16) & 31 != (hi_word >> 21) & 31:
         return None
     low = lo_word & 0xFFFF
     if low & 0x8000:
@@ -211,8 +289,11 @@ def resolve_return(ref, tgt, address, callee_targets, anchors):
 
     The window around the `bl` at address-4 is searched in the target, widest
     first. Only hits that call the callee's matched target address count, so a
-    short window is enough when it is unique under that filter.
+    short window is enough when it is unique under that filter. A data address
+    that cannot follow a call in the reference image is not resolved this way.
     """
+    if not ref.contains(address - 4):
+        return None
     call = ref.index(address - 4)
     callee = bl_target(ref, call)
     if callee not in callee_targets:
@@ -334,27 +415,30 @@ def main():
     parser.add_argument("--sign", metavar="PROFILE", help="Instead of generating, (re)write the runtime-check "
                         "signatures of an existing profile from --target-xex")
     parser.add_argument("--output", type=pathlib.Path, help="Profile path (default: versions/<id>.json)")
-    parser.add_argument("--d3-image", type=pathlib.Path, default=ROOT / "tools/d3-patch/d3-image")
+    parser.add_argument("--d3-image", type=pathlib.Path,
+                        default=ROOT / "tools/d3-patch" / ("d3-image.exe" if os.name == "nt" else "d3-image"))
     parser.add_argument("--allow-partial", action="store_true", help="Write the profile even if entries are unresolved (null addresses)")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing output file")
     args = parser.parse_args()
+    if args.sign and not args.target_xex:
+        parser.error("--sign needs --target-xex (the executable the profile describes)")
+    for name in () if args.sign else ("reference", "reference_xex", "target_xex", "id"):
+        if not getattr(args, name):
+            parser.error(f"--{name.replace('_', '-')} is required when generating a profile")
+    if not args.d3_image.is_file():
+        print(f"find_feature_addresses: d3-image not found at {args.d3_image}; pass --d3-image, or build it "
+              "with `cmake --build tools/d3-patch --target d3-image` once build_client.py has configured "
+              "tools/d3-patch", file=sys.stderr)
+        return 1
     if args.sign:
-        if not args.target_xex:
-            parser.error("--sign needs --target-xex (the executable the profile describes)")
         try:
             print(f"Wrote signatures to {sign_profile(args.sign, args.target_xex, args.d3_image)}")
             return 0
         except (ProfileError, OSError) as error:
             print(f"find_feature_addresses: {error}", file=sys.stderr)
             return 1
-    for name in ("reference", "reference_xex", "target_xex", "id"):
-        if not getattr(args, name):
-            parser.error(f"--{name.replace('_', '-')} is required when generating a profile")
     output = args.output or VERSIONS / f"{args.id}.json"
     try:
-        if not args.d3_image.is_file():
-            raise ProfileError(f"d3-image not found at {args.d3_image}; build it with "
-                               "`cmake --build tools/d3-patch --target d3-image`")
         if output.exists() and not args.force:
             raise ProfileError(f"{output} exists; use --force to overwrite")
         profile_ref, report, digest = generate(args.reference, args.reference_xex, args.target_xex, args.d3_image)

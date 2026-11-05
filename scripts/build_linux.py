@@ -2,14 +2,12 @@
 """Build the shared port with the pinned Linux Vulkan SDK."""
 import argparse
 import hashlib
-import json
 import pathlib
 import shutil
 import subprocess
 
-from apply_generated_patches import patch_generated
-from codegen_title_update import generate_update
-from sdk_patches import apply_common_patches, apply_linux_patches, checkout_pinned_sdk, write_stamp
+from codegen_title_update import generate
+from sdk_patches import apply_common_patches, apply_linux_patches, checkout_pinned_sdk, clear_stamp, write_stamp
 from title_updates import DISC_SHA256, USA_UPDATE_SHA256, update_layout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -41,6 +39,7 @@ def build_sdk(args, cmake):
         output / "libfmt.a", output / "libdisasm.a", f"-L{output}", "-lrexruntime",
         f"-Wl,-rpath,{output}", "-o", regression)
     run(regression)
+    clear_stamp(args.sdk_prefix)
     run(cmake, "--install", build)
     write_stamp(args.sdk_prefix, "linux")
 
@@ -84,25 +83,7 @@ def main():
             if not xex.is_file() or hashlib.sha256(xex.read_bytes()).hexdigest() != expected:
                 raise ValueError(f"Default.xex missing or SHA-256 mismatch for {args.title_update or 'base-disc'} build")
             variant = "update" if args.title_update else "base"
-            generated = ROOT / "port/generated" / variant
-            if args.title_update:
-                generate_update(args.game_dir, args.sdk_prefix / "bin/rexglue", args.skip_codegen)
-            elif not args.skip_codegen:
-                manifest_dir = ROOT / "port/base"
-                game_placeholder = "../../game"
-                manifest = (manifest_dir / "diablo3_manifest.toml").read_text()
-                # JSON strings also encode paths safely as TOML basic strings.
-                manifest = manifest.replace(json.dumps(game_placeholder), json.dumps(str(args.game_dir), ensure_ascii=False))
-                manifest = manifest.replace(json.dumps(game_placeholder + "/Default.xex"), json.dumps(str(xex), ensure_ascii=False))
-                local_manifest = manifest_dir / "local_manifest.toml"
-                local_manifest.write_text(manifest, encoding="utf-8")
-                # An interrupted regeneration must not leave a valid reuse stamp.
-                (generated / "source-xex.sha256").unlink(missing_ok=True)
-                run(args.sdk_prefix / "bin/rexglue", "codegen", local_manifest)
-                generated.mkdir(parents=True, exist_ok=True)
-                (generated / "source-xex.sha256").write_text(expected + "\n")
-            if not args.title_update:
-                patch_generated(generated)
+            generate(variant, args.game_dir, args.sdk_prefix / "bin/rexglue", args.skip_codegen)
             name = "linux-amd64" + ("-update" if args.title_update else "") + ("" if args.extra_features else "-plain") + "-relwithdebinfo"
             source, build = ROOT / "port", ROOT / "port/out/build" / name
         feature_options = [] if args.probe else [

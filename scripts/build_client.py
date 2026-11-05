@@ -17,6 +17,7 @@ import subprocess
 import sys
 
 import build_windows
+import codegen_title_update
 import extract_disc
 import extract_update
 import sdk_patches
@@ -75,11 +76,6 @@ def update_ready(game_dir):
 def game_update_dir(args):
     """The folder update is built and run from: --game-dir-update, else the base folder (overlay)."""
     return args.game_dir_update or args.game_dir
-
-
-def stamp_matches(variant_dir, expected):
-    stamp = ROOT / "port/generated" / variant_dir / "source-xex.sha256"
-    return stamp.is_file() and stamp.read_text().strip() == expected
 
 
 def cmake_version(cmake):
@@ -141,10 +137,37 @@ def disc_bytes(iso):
         return sum(length for _, is_dir, _, length in extract_disc.Disc(source).entries() if not is_dir)
 
 
+def existing_ancestor(path):
+    return next(p for p in (path, *path.parents) if p.exists())
+
+
 def same_filesystem(a, b):
-    a = next(p for p in (a, *a.parents) if p.exists())
-    b = next(p for p in (b, *b.parents) if p.exists())
-    return os.stat(a).st_dev == os.stat(b).st_dev
+    return os.stat(existing_ancestor(a)).st_dev == os.stat(existing_ancestor(b)).st_dev
+
+
+def check_free_space(args, need_base, need_separate_update, need_sdk, compile_needed):
+    """Fail early when a drive the build writes to lacks room for what is still to do."""
+    writes = []  # (folder, bytes)
+    if need_base:  # an interrupted extraction resumes, so only the rest is needed
+        writes.append((args.game_dir, extract_disc.bytes_to_extract(args.iso, args.game_dir)))
+    if need_separate_update and not same_filesystem(args.game_dir, args.game_dir_update):
+        # A separate update folder hardlinks the disc files when it can and copies them otherwise.
+        disc = disc_bytes(args.iso) if need_base else sum(
+            f.stat().st_size for f in args.game_dir.rglob("*") if f.is_file())
+        writes.append((args.game_dir_update, disc))
+    if need_sdk:
+        writes.append((args.sdk_source, SDK_BYTES))
+    if compile_needed:
+        writes.append((ROOT / "port", VARIANT_BYTES * len(args.variants) + CODEGEN_BYTES * 2))
+    needed = {}  # device -> [folder, bytes]
+    for folder, size in writes:
+        device = os.stat(existing_ancestor(folder)).st_dev
+        needed.setdefault(device, [folder, 0])[1] += size
+    for folder, size in needed.values():
+        free = shutil.disk_usage(existing_ancestor(folder)).free
+        if size > free:
+            raise BuildError(f"About {size / GIB:.1f} GiB of free space is needed on the drive of {folder}; "
+                             f"{free / GIB:.1f} GiB is free.")
 
 
 def verify_iso(iso):
@@ -173,13 +196,7 @@ def build_patcher(args):
     """Clone the pinned XenonRecomp and build tools/d3-patch/d3-patch."""
     lock = json.loads((SCRIPTS / "d3-patch/xenonrecomp.lock.json").read_text())
     source = ROOT / "tools/XenonRecomp"
-    if not source.exists():
-        run("git", "clone", "--no-checkout", lock["repository"], source)
-        run("git", "-C", source, "checkout", "--detach", lock["commit"])
-    actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-    if actual != lock["commit"]:
-        raise BuildError(f"XenonRecomp revision mismatch: {actual}; expected {lock['commit']}")
-    run("git", "-C", source, "submodule", "update", "--init", "--recursive")
+    sdk_patches.checkout_pinned(source, lock["repository"], lock["commit"], run)
     build = ROOT / "tools/d3-patch"
     run(args.cmake, "-S", SCRIPTS / "d3-patch", "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++", f"-DXENONRECOMP_DIR={source}")
@@ -200,8 +217,8 @@ def build_variant(args, variant):
         command += ["--title-update", "usa"]
     if plain:
         command.append("--no-extra-features")
-    # Reuse sources generated earlier in this or a previous run for the same executable.
-    if not args.regenerate and stamp_matches("update" if update else "base", USA_UPDATE_SHA256 if update else DISC_SHA256):
+    # Reuse sources generated earlier from the same executable, hints and SDK code generator.
+    if not args.regenerate and codegen_title_update.stamp_current("update" if update else "base"):
         command.append("--skip-codegen")
     run(*command)
 
@@ -238,17 +255,7 @@ def plan(args):
     if need_update:
         verify_package(args.title_update)
 
-    disc = disc_bytes(args.iso) if need_base else sum(
-        f.stat().st_size for f in args.game_dir.rglob("*") if f.is_file())
-    needed = disc if need_base else 0
-    if need_update and not overlay and not same_filesystem(args.game_dir, args.game_dir_update):
-        needed += disc
-    if compile_needed:
-        needed += (SDK_BYTES if need_sdk else 0) + VARIANT_BYTES * len(args.variants) + CODEGEN_BYTES * 2
-    target = next(p for p in (args.game_dir, *args.game_dir.parents) if p.exists())
-    free = shutil.disk_usage(target).free
-    if needed > free:
-        raise BuildError(f"About {needed / GIB:.1f} GiB of free space is needed; {free / GIB:.1f} GiB is free.")
+    check_free_space(args, need_base, need_update and not overlay, need_sdk, compile_needed)
 
     if need_base:
         steps.append(("Extract disc image", lambda: extract_disc.extract(args.iso, args.game_dir)))
