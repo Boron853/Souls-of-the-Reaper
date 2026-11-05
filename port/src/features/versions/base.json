@@ -1,0 +1,357 @@
+{
+  "id": "base",
+  "description": "Retail USA base disc executable",
+  "executable_sha256": "cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef",
+  "functions": {
+    "version_format_call": {
+      "address": "823BD130",
+      "hook": true,
+      "signature": [
+        "7D8802A6",
+        "91810000",
+        "FBE10000",
+        "F8A10000",
+        "F8C10000",
+        "F8E10000",
+        "F9010000",
+        "F9210000",
+        "F9410000",
+        "94210000",
+        "90810000",
+        "39610000"
+      ]
+    },
+    "resolve_label": {
+      "address": "8246C4B0",
+      "hook": false,
+      "signature": [
+        "38800004",
+        "48000000",
+        "38800003",
+        "48000000",
+        "3880001B",
+        "48000000",
+        "38800020",
+        "48000000",
+        "3880001E",
+        "48000000",
+        "3880001F",
+        "48000000"
+      ]
+    },
+    "selector_control": {
+      "address": "8246C520",
+      "hook": false,
+      "evidence": "Direct call from selector change handler 0x826FCEC0, followed by lwz selected index at +472.",
+      "signature": [
+        "38800038",
+        "48000000",
+        "38800039",
+        "48000000",
+        "3880001A",
+        "48000000",
+        "38800012",
+        "48000000",
+        "38800011",
+        "48000000",
+        "3880000F",
+        "48000000"
+      ]
+    },
+    "find_child_node": {
+      "address": "825086E0",
+      "hook": false,
+      "signature": [
+        "7D8802A6",
+        "48000001",
+        "3BE10000",
+        "94210000",
+        "7C7E1B78",
+        "387F0000",
+        "7C9D2378",
+        "7CBC2B78",
+        "48000001",
+        "3D600000",
+        "7F85E378",
+        "388B0000"
+      ]
+    },
+    "option_descriptor_init": {
+      "address": "826FBD68",
+      "hook": false,
+      "signature": [
+        "7D8802A6",
+        "91810000",
+        "FBC10000",
+        "FBE10000",
+        "3BE10000",
+        "94210000",
+        "7C7E1B78",
+        "907F0000",
+        "38630000",
+        "48000001",
+        "387E0000",
+        "48000001"
+      ]
+    },
+    "option_descriptor_selector": {
+      "address": "826FBE30",
+      "hook": false,
+      "signature": [
+        "7D8802A6",
+        "48000001",
+        "3BE10000",
+        "94210000",
+        "7C7E1B78",
+        "90BF0000",
+        "7C9B2378",
+        "90DF0000",
+        "7CBD2B78",
+        "7CDC3378",
+        "7CFA3B78",
+        "7CA32B78"
+      ]
+    },
+    "selector_count": {
+      "address": "826FBFF0",
+      "hook": true,
+      "signature": [
+        "81630000",
+        "2F0B0000",
+        "41980000",
+        "2F0B0000",
+        "40990000",
+        "2F0B0000",
+        "409A0000",
+        "38600008",
+        "4E800020",
+        "3860000B",
+        "4E800020",
+        "38600000"
+      ]
+    },
+    "selector_init": {
+      "address": "826FC030",
+      "hook": true,
+      "signature": [
+        "7D8802A6",
+        "48000001",
+        "94210000",
+        "7C7D1B78",
+        "7C9E2378",
+        "3BE00000",
+        "48000001",
+        "817D0000",
+        "2F0B0000",
+        "419A0000",
+        "2F0B0000",
+        "419A0000"
+      ]
+    },
+    "selector_row_label": {
+      "address": "826FC798",
+      "hook": true,
+      "signature": [
+        "7D8802A6",
+        "48000001",
+        "3BE10000",
+        "94210000",
+        "3D600000",
+        "7C7C1B78",
+        "7CA42B78",
+        "387F0000",
+        "38AB0000",
+        "7CDD3378",
+        "48000001",
+        "48000001"
+      ]
+    },
+    "selector_changed": {
+      "address": "826FCE80",
+      "hook": true,
+      "signature": [
+        "7D8802A6",
+        "91810000",
+        "FBC10000",
+        "FBE10000",
+        "94210000",
+        "3D400000",
+        "39200001",
+        "816A0000",
+        "912B0000",
+        "816A0000",
+        "814B0000",
+        "E94A0000"
+      ]
+    },
+    "video_options_build": {
+      "address": "826FD808",
+      "hook": true,
+      "signature": [
+        "7D8802A6",
+        "48000001",
+        "3BE10000",
+        "94210000",
+        "3BA30000",
+        "7C7C1B78",
+        "7FA3EB78",
+        "48000001",
+        "3BDC0000",
+        "7FC3F378",
+        "48000001",
+        "3B5C0000"
+      ]
+    },
+    "options_insert": {
+      "address": "82700AD8",
+      "hook": false,
+      "signature": [
+        "7D8802A6",
+        "48000001",
+        "3BE10000",
+        "94210000",
+        "7C7D1B78",
+        "909F0000",
+        "7C9E2378",
+        "397F0000",
+        "387F0000",
+        "917F0000",
+        "48000001",
+        "7C641B78"
+      ]
+    },
+    "selector_set_index": {
+      "address": "82749C10",
+      "hook": false,
+      "signature": [
+        "7D8802A6",
+        "48000001",
+        "94210000",
+        "7C7F1B78",
+        "7C9E2378",
+        "7CBD2B78",
+        "2F040000",
+        "419A0000",
+        "2F040000",
+        "41980000",
+        "81630000",
+        "816B0000"
+      ]
+    },
+    "localized_text": {
+      "address": "8282F0F0",
+      "hook": true,
+      "signature": [
+        "7D8802A6",
+        "91810000",
+        "FBC10000",
+        "FBE10000",
+        "3BE10000",
+        "94210000",
+        "39600000",
+        "907F0000",
+        "38BF0000",
+        "917F0000",
+        "7C7E1B78",
+        "917F0000"
+      ]
+    },
+    "string_c_str": {
+      "address": "82CD9520",
+      "hook": false,
+      "signature": [
+        "80630000",
+        "4E800020",
+        "80630000",
+        "4E800020",
+        "81630000",
+        "806B0000",
+        "4E800020",
+        "00000000",
+        "81630000",
+        "7C8A2378",
+        "892B0000",
+        "890A0000"
+      ]
+    },
+    "string_destroy": {
+      "address": "82CDA018",
+      "hook": false,
+      "signature": [
+        "48000000",
+        "00000000",
+        "7D8802A6",
+        "48000001",
+        "94210000",
+        "81630000",
+        "7C7F1B78",
+        "7C9D2378",
+        "3FC00000",
+        "2B0B0000",
+        "409A0000",
+        "817E0000"
+      ]
+    },
+    "string_construct": {
+      "address": "82CDAD58",
+      "hook": false,
+      "signature": [
+        "7D8802A6",
+        "91810000",
+        "FBE10000",
+        "94210000",
+        "39600000",
+        "7C7F1B78",
+        "91630000",
+        "48000001",
+        "7FE3FB78",
+        "38210000",
+        "81810000",
+        "7D8803A6"
+      ]
+    },
+    "string_assign": {
+      "address": "82CDB0F0",
+      "hook": false,
+      "signature": [
+        "7D8802A6",
+        "91810000",
+        "FBC10000",
+        "FBE10000",
+        "94210000",
+        "81630000",
+        "7C7F1B78",
+        "7C9E2378",
+        "2B0B0000",
+        "409A0000",
+        "3D600000",
+        "816B0000"
+      ]
+    }
+  },
+  "data": {
+    "options_owner": {
+      "address": "83302514"
+    },
+    "selector_text": {
+      "address": "8207F9A4"
+    },
+    "version_call_return": {
+      "address": "8247C004"
+    },
+    "version_format": {
+      "address": "82003ED0"
+    }
+  },
+  "layout": {
+    "video_vector": 128,
+    "active_descriptor_vector": 296,
+    "active_descriptor_index": 12,
+    "descriptor_stride": 44,
+    "descriptor_action_id": 32,
+    "selector_option_id": 4,
+    "selector_selected_index": 472,
+    "options_dirty_flag": 344,
+    "label_setter_vtable_slot": 132
+  }
+}

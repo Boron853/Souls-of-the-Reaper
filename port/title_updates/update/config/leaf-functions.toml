@@ -1,0 +1,342 @@
+# update executable SHA-256: 447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f
+# Relocated from base-disc hints; see ../relocations.json.
+
+# Base entry 0x8240FD60
+[functions."0x82412360"]
+size = 4
+
+# Base entry 0x824DEF80
+[functions."0x824E1760"]
+size = 4
+
+# Base entry 0x8254B2C0
+[functions."0x8254EE40"]
+size = 8
+
+# Base entry 0x82768758
+[functions."0x8276EE50"]
+size = 44
+
+# Base entry 0x827B81C0
+[functions."0x827BECC0"]
+size = 8
+
+# Base entry 0x827B81C8
+[functions."0x827BECC8"]
+size = 8
+
+# Base entry 0x828292F0
+[functions."0x828300E0"]
+size = 16
+
+# Base entry 0x828294E0
+[functions."0x828302D0"]
+size = 24
+
+# Base entry 0x829EADE8
+[functions."0x829F25A0"]
+size = 52
+
+# Base entry 0x829EC8D0
+[functions."0x829F4088"]
+size = 52
+
+# Base entry 0x829EE1B8
+[functions."0x829F5970"]
+size = 52
+
+# Base entry 0x829EFA30
+[functions."0x829F71E8"]
+size = 52
+
+# Base entry 0x829EFF98
+[functions."0x829F7750"]
+size = 52
+
+# Base entry 0x829F19A0
+[functions."0x829F9158"]
+size = 52
+
+# Base entry 0x829F7C90
+[functions."0x829FF448"]
+size = 52
+
+# Base entry 0x82F37150
+[functions."0x82F3F330"]
+size = 164
+
+# Base entry 0x82F8F398
+[functions."0x82F98690"]
+size = 8
+
+# Base entry 0x82FA5558
+[functions."0x82FAE850"]
+size = 8
+
+# Base entry 0x82FA5560
+[functions."0x82FAE858"]
+size = 8
+
+# Base entry 0x82FA5568
+[functions."0x82FAE860"]
+size = 8
+
+# Base entry 0x82FA5570
+[functions."0x82FAE868"]
+size = 8
+
+# Base entry 0x82FA5578
+[functions."0x82FAE870"]
+size = 8
+
+# Base entry 0x82FA5580
+[functions."0x82FAE878"]
+size = 8
+
+# Base entry 0x82FA5588
+[functions."0x82FAE880"]
+size = 8
+
+# Base entry 0x82FA5590
+[functions."0x82FAE888"]
+size = 8
+
+# Base entry 0x82FA55A0
+[functions."0x82FAE898"]
+size = 8
+
+# Base entry 0x82FA55A8
+[functions."0x82FAE8A0"]
+size = 8
+
+# Base entry 0x82FA55B0
+[functions."0x82FAE8A8"]
+size = 8
+
+# Base entry 0x82FA55B8
+[functions."0x82FAE8B0"]
+size = 8
+
+# Base entry 0x82FA55C0
+[functions."0x82FAE8B8"]
+size = 8
+
+# Base entry 0x82FA55C8
+[functions."0x82FAE8C0"]
+size = 8
+
+# Base entry 0x82FA55D0
+[functions."0x82FAE8C8"]
+size = 8
+
+# Base entry 0x82FA5638
+[functions."0x82FAE930"]
+size = 8
+
+# Base entry 0x82FABC90
+[functions."0x82FB4F88"]
+size = 8
+
+# Base entry 0x82FABC98
+[functions."0x82FB4F90"]
+size = 8
+
+# Base entry 0x82FABCA0
+[functions."0x82FB4F98"]
+size = 8
+
+# Base entry 0x82FABCA8
+[functions."0x82FB4FA0"]
+size = 8
+
+# Base entry 0x82FABCB0
+[functions."0x82FB4FA8"]
+size = 8
+
+# Base entry 0x82FABCB8
+[functions."0x82FB4FB0"]
+size = 8
+
+# Base entry 0x82FABCC0
+[functions."0x82FB4FB8"]
+size = 8
+
+# Base entry 0x82FABCD0
+[functions."0x82FB4FC8"]
+size = 8
+
+# Base entry 0x82FABCD8
+[functions."0x82FB4FD0"]
+size = 8
+
+# Base entry 0x82FABCE0
+[functions."0x82FB4FD8"]
+size = 8
+
+# Base entry 0x82FABCE8
+[functions."0x82FB4FE0"]
+size = 8
+
+# Base entry 0x82FABCF0
+[functions."0x82FB4FE8"]
+size = 8
+
+# Base entry 0x82FABCF8
+[functions."0x82FB4FF0"]
+size = 8
+
+# Base entry 0x82FABD00
+[functions."0x82FB4FF8"]
+size = 8
+
+# Base entry 0x82FABD08
+[functions."0x82FB5000"]
+size = 8
+
+# Base entry 0x82FABD10
+[functions."0x82FB5008"]
+size = 8
+
+# Base entry 0x82FABD18
+[functions."0x82FB5010"]
+size = 8
+
+# Base entry 0x82FABD20
+[functions."0x82FB5018"]
+size = 8
+
+# Base entry 0x82FAD8E0
+[functions."0x82FB6BD8"]
+size = 8
+
+# Base entry 0x82FAD8E8
+[functions."0x82FB6BE0"]
+size = 8
+
+# Base entry 0x82FAD8F0
+[functions."0x82FB6BE8"]
+size = 8
+
+# Base entry 0x82FAD900
+[functions."0x82FB6BF8"]
+size = 8
+
+# Base entry 0x82FAD908
+[functions."0x82FB6C00"]
+size = 8
+
+# Base entry 0x82FAD910
+[functions."0x82FB6C08"]
+size = 8
+
+# Base entry 0x82FAD918
+[functions."0x82FB6C10"]
+size = 8
+
+# Base entry 0x82FAD920
+[functions."0x82FB6C18"]
+size = 8
+
+# Base entry 0x82FAD928
+[functions."0x82FB6C20"]
+size = 8
+
+# Base entry 0x82FAD930
+[functions."0x82FB6C28"]
+size = 8
+
+# Base entry 0x82FAD938
+[functions."0x82FB6C30"]
+size = 8
+
+# Base entry 0x82FAD940
+[functions."0x82FB6C38"]
+size = 8
+
+# Base entry 0x82FAD948
+[functions."0x82FB6C40"]
+size = 8
+
+# Base entry 0x82FAD950
+[functions."0x82FB6C48"]
+size = 8
+
+# Base entry 0x82FAD958
+[functions."0x82FB6C50"]
+size = 8
+
+# Base entry 0x82FAD960
+[functions."0x82FB6C58"]
+size = 8
+
+# Base entry 0x82FAD968
+[functions."0x82FB6C60"]
+size = 8
+
+# Base entry 0x82FAD970
+[functions."0x82FB6C68"]
+size = 8
+
+# Base entry 0x82FE7688
+[functions."0x82FF0980"]
+size = 8
+
+# Base entry 0x82FE8620
+[functions."0x82FF1918"]
+size = 8
+
+# Base entry 0x82FE8628
+[functions."0x82FF1920"]
+size = 8
+
+# Base entry 0x82FE8B20
+[functions."0x82FF1E18"]
+size = 8
+
+# Base entry 0x82FEBB38
+[functions."0x82FF4E30"]
+size = 52
+
+# Base entry 0x82FEBDF0
+[functions."0x82FF50E8"]
+size = 8
+
+# Base entry 0x82FED268
+[functions."0x82FF6560"]
+size = 8
+
+# Base entry 0x83005BB8
+[functions."0x8300EEB0"]
+size = 8
+
+# Base entry 0x83006378
+[functions."0x8300F670"]
+size = 8
+
+# Base entry 0x83006388
+[functions."0x8300F680"]
+size = 8
+
+# Base entry 0x83008250
+[functions."0x83011548"]
+size = 8
+
+# Base entry 0x83008260
+[functions."0x83011558"]
+size = 8
+
+# Base entry 0x83008278
+[functions."0x83011570"]
+size = 8
+
+# Base entry 0x83008280
+[functions."0x83011578"]
+size = 8
+
+# Base entry 0x83008288
+[functions."0x83011580"]
+size = 8
+
+# Base entry 0x830FA618
+[functions."0x83103860"]
+size = 84

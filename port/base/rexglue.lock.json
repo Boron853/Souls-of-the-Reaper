@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/rexglue/rexglue-sdk.git",
+  "commit": "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518",
+  "graphics": "vulkan",
+  "architecture": "x86-64-v2"
+}

@@ -1,0 +1,52 @@
+diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
+index a77f5e6..0f86902 100644
+--- a/src/system/xam/user_profile.cpp
++++ b/src/system/xam/user_profile.cpp
+@@ -9,11 +9,15 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <cstdlib>
++#include <exception>
+ #include <sstream>
++#include <string_view>
+ 
+ #include <fmt/format.h>
+ 
+ #include <rex/logging.h>
++#include <rex/string/utf8.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/user_profile.h>
+ 
+@@ -27,6 +31,31 @@ UserProfile::UserProfile() {
+   // "You do not have permissions to perform this operation."
+   xuid_ = 0xB13EBABEBABEBABE;
+   name_ = "User";
++  // The launcher passes the player's chosen name here. XAM name buffers hold
++  // 16 bytes including the terminator, so keep at most 15 characters.
++  if (const char* custom = std::getenv("SOTR_USERNAME")) {
++    try {
++      std::string custom_name(custom);
++#ifdef _WIN32
++      // The narrow environment uses the ANSI code page; the name is needed as UTF-8.
++      if (const wchar_t* wide = _wgetenv(L"SOTR_USERNAME")) {
++        custom_name = rex::string::to_utf8(std::u16string_view(reinterpret_cast<const char16_t*>(wide)));
++      }
++#endif
++      // Cut at a character boundary: half a UTF-8 sequence would make every later
++      // conversion of the name to UTF-16 throw.
++      size_t length = custom_name.size() > 15 ? 15 : custom_name.size();
++      while (length > 0 && length < custom_name.size() &&
++             (static_cast<unsigned char>(custom_name[length]) & 0xC0) == 0x80) {
++        --length;
++      }
++      custom_name.resize(length);
++      static_cast<void>(rex::string::to_utf16(custom_name));  // throws unless valid UTF-8
++      if (!custom_name.empty()) name_ = custom_name;
++    } catch (const std::exception&) {
++      REXSYS_WARN("SOTR_USERNAME is not valid UTF-8; using the default name");
++    }
++  }
+ 
+   // https://cs.rin.ru/forum/viewtopic.php?f=38&t=60668&hilit=gfwl+live&start=195
+   // https://github.com/arkem/py360/blob/master/py360/constants.py

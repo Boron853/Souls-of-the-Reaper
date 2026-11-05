@@ -1,0 +1,42 @@
+--- a/src/patch_xex.cpp
++++ b/src/patch_xex.cpp
+@@ -4,6 +4,7 @@
+ #include <cstring>
+ #include <filesystem>
+ #include <iostream>
++#include <TinySHA1.hpp>
+ 
+ int main(int argc, char** argv) {
+     const bool experimental = argc == 5 && std::strcmp(argv[4], "--allow-source-mismatch") == 0;
+@@ -39,13 +40,18 @@
+     const auto* header = reinterpret_cast<const Xex2Header*>(base.data());
+     const auto* security = reinterpret_cast<const Xex2SecurityInfo*>(base.data() + header->securityOffset);
+     bool version_match = execution[1].get() == descriptor->sourceVersionValue.get();
+-    bool digest_match = std::memcmp(security->headerDigest, descriptor->digestSource, 20) == 0;
++    // digestSource identifies the source RSA signature, not headerDigest.
++    uint8_t signature_digest[20];
++    sha1::SHA1 signature_hash;
++    signature_hash.processBytes(security->rsaSignature, sizeof(security->rsaSignature));
++    signature_hash.finalize(signature_digest);
++    bool digest_match = std::memcmp(signature_digest, descriptor->digestSource, 20) == 0;
+     std::cout << std::hex << "Base version: 0x" << execution[1].get()
+               << "\nRequired source version: 0x" << descriptor->sourceVersionValue.get()
+               << "\nTarget version: 0x" << descriptor->targetVersionValue.get()
+-              << "\nSource header digest match: " << (digest_match ? "yes" : "no") << '\n';
++              << "\nSource signature digest match: " << (digest_match ? "yes" : "no") << '\n';
+     if ((!version_match || !digest_match) && !experimental) {
+-        std::cerr << "PatchIncompatible: source version/header digest mismatch; no output written\n";
++        std::cerr << "PatchIncompatible: source version/signature digest mismatch; no output written\n";
+         return 3;
+     }
+     if ((!version_match || !digest_match) && experimental)
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -6,6 +6,7 @@
+ target_link_libraries(d3-inspect PRIVATE XenonUtils)
+ add_executable(d3-patch src/patch_xex.cpp)
+ target_link_libraries(d3-patch PRIVATE XenonUtils)
++target_include_directories(d3-patch PRIVATE tools/XenonRecomp/thirdparty/TinySHA1)
+ include(CTest)
+ if(BUILD_TESTING)
+     find_package(Python3 REQUIRED COMPONENTS Interpreter)

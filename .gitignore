@@ -2,13 +2,15 @@
 game/
 D3_Portable/
 
-# ReXGlue SDK - clone separately and apply patches/ (see README)
+# ReXGlue SDK - cloned and built under tools/ by scripts/build_*.py (see README)
 rexglue-sdk/
-sdk-bin/
 
 # Build outputs
 port/out/
 port/generated/
+port/base/local_manifest.toml
+port/base/generated/
+__pycache__/
 port/ttd/
 
 # Third-party tools
@@ -83,3 +85,18 @@ HANDOFF_*.md
 video_script.md
 IDIOMAS_Y_REGIONES.md
 cosas por hacer.txt
+
+# Isolated update assets and local codegen paths
+game-update/
+game-tu2/
+port/title_updates/update/local_manifest.toml
+port/title_updates/update/generated/
+# Per-machine validation records (GPU, device index, timings)
+validation.json
+
+# Tauri launcher build outputs
+launcher/tauri/node_modules/
+launcher/tauri/dist/
+launcher/tauri/src-tauri/target/
+launcher/tauri/src-tauri/icons/
+launcher/tauri/src-tauri/gen/

@@ -1,0 +1,94 @@
+# Builds the Tauri launcher for Windows and Linux when a release is published
+# and attaches both to the release. The launcher embeds the release commit and
+# this repository, so outside a source checkout it can fetch the matching
+# sources to build the game (launcher/tauri/README.md, "Without a checkout").
+name: Launcher release
+
+on:
+  release:
+    types: [published]
+  # Rebuilds the launchers for an existing release, e.g. after a failed run.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and upload to
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: sotr-launcher-windows-x64.exe
+          # The oldest supported runner keeps the glibc requirement low, so the
+          # binary also runs on older distributions.
+          - os: ubuntu-22.04
+            asset: sotr-launcher-linux-x64.tar.gz
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: launcher/tauri
+    env:
+      # Embedded by src-tauri/build.rs. REQUIRE_CLEAN fails the build when the
+      # checkout is modified, since such a launcher could not fetch its sources.
+      SOTR_REPO: https://github.com/${{ github.repository }}
+      SOTR_REQUIRE_CLEAN: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: launcher/tauri/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher/tauri/src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Test
+        run: |
+          # The generated page and icons (gitignored) are needed to compile the host.
+          npm run prepare-ui
+          npm test
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build
+        run: npm run build
+
+      - name: Package
+        run: |
+          mkdir -p ../../release-assets
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp src-tauri/target/release/sotr-launcher.exe "../../release-assets/${{ matrix.asset }}"
+          else
+            # A tarball keeps the executable bit, which release downloads lose.
+            tar -czf "../../release-assets/${{ matrix.asset }}" -C src-tauri/target/release sotr-launcher
+          fi
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "../../release-assets/${{ matrix.asset }}" --clobber

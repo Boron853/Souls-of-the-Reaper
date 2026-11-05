@@ -1,0 +1,5 @@
+DEFINE_REX_FUNC(sub_831583B0) {
+  // Direct calls are rewritten to D3_GUEST_SETJMP in the caller, whose frame
+  // outlives the protected call. This body only serves indirect calls.
+  D3_GUEST_SETJMP(ctx);
+}

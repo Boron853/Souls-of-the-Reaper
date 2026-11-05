@@ -1,0 +1,113 @@
+--- a/include/rex/ui/overlay/achievement_toast.h
++++ b/include/rex/ui/overlay/achievement_toast.h
+@@ -13,6 +13,7 @@
+ 
+ #include <chrono>
+ #include <deque>
++#include <memory>
+ #include <mutex>
+ #include <optional>
+ #include <rex/ui/overlay/achievement_notification.h>
+@@ -25,11 +26,15 @@
+ namespace rex::ui {
+ 
+ class ImmediateDrawer;
++class WindowedAppContext;
+ 
+ class AchievementToastDialog : public AchievementNotificationDialog {
+  public:
++  // With an app context the dialog is attached to the drawer only while a
++  // toast is queued: any attached dialog makes the window repaint
++  // continuously, presenting uncapped frames.
+   AchievementToastDialog(ImGuiDrawer* drawer, ImmediateDrawer* immediate_drawer,
+-                         rex::Runtime* runtime);
++                         rex::Runtime* runtime, WindowedAppContext* app_context = nullptr);
+   ~AchievementToastDialog() override;
+ 
+   // Thread-safe: safe to call from any thread, including guest threads.
+@@ -49,6 +54,9 @@
+ 
+   std::mutex mutex_;
+   std::deque<PendingToast> queue_;
++  WindowedAppContext* app_context_;
++  bool attached_ = true;  // Guarded by mutex_.
++  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+   AchievementIconCache icon_cache_;
+ };
+ 
+--- a/src/ui/overlay/achievement_toast.cpp
++++ b/src/ui/overlay/achievement_toast.cpp
+@@ -14,19 +14,45 @@
+ #include <algorithm>
+ 
+ #include <rex/ui/immediate_drawer.h>
++#include <rex/ui/windowed_app_context.h>
+ 
+ namespace rex::ui {
+ 
+ AchievementToastDialog::AchievementToastDialog(ImGuiDrawer* drawer,
+                                                ImmediateDrawer* immediate_drawer,
+-                                               rex::Runtime* runtime)
+-    : AchievementNotificationDialog(drawer), icon_cache_(immediate_drawer, runtime) {}
++                                               rex::Runtime* runtime,
++                                               WindowedAppContext* app_context)
++    : AchievementNotificationDialog(drawer),
++      app_context_(app_context),
++      icon_cache_(immediate_drawer, runtime) {
++  if (app_context_) {
++    // Stay detached until the first toast arrives.
++    imgui_drawer()->RemoveDialog(this);
++    attached_ = false;
++  }
++}
+ 
+-AchievementToastDialog::~AchievementToastDialog() {}
++AchievementToastDialog::~AchievementToastDialog() {
++  // Destroyed on the UI thread; queued attach requests must not use it.
++  *alive_ = false;
++}
+ 
+ void AchievementToastDialog::Push(const rex::system::AchievementEvent& event) {
+-  std::lock_guard<std::mutex> lock(mutex_);
+-  queue_.push_back({event, std::chrono::steady_clock::now()});
++  bool attach = false;
++  {
++    std::lock_guard<std::mutex> lock(mutex_);
++    queue_.push_back({event, std::chrono::steady_clock::now()});
++    if (!attached_ && app_context_) {
++      attached_ = attach = true;
++    }
++  }
++  if (attach) {
++    app_context_->CallInUIThread([this, alive = alive_] {
++      if (*alive) {
++        imgui_drawer()->AddDialog(this);
++      }
++    });
++  }
+ }
+ 
+ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
+@@ -48,6 +74,11 @@
+       }
+     }
+     if (queue_.empty()) {
++      if (app_context_ && attached_) {
++        // A later Push queues a new attach after this removal.
++        attached_ = false;
++        imgui_drawer()->RemoveDialog(this);
++      }
+       return;
+     }
+     toast = queue_.front();
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -74,7 +74,7 @@
+     return nullptr;
+   }
+   return std::make_unique<ui::AchievementToastDialog>(imgui_drawer_.get(), immediate_drawer_.get(),
+-                                                      runtime_.get());
++                                                      runtime_.get(), &app_context());
+ }
+ 
+ system::AchievementManager& ReXApp::achievements() const {

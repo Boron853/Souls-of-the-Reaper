@@ -66,6 +66,11 @@
   .opt-row:hover .opt-label,.opt-row.active .opt-label,.opt-row:focus-visible .opt-label{color:#e2d7bd}
   .cycler{position:relative;z-index:1;display:flex;align-items:center;gap:8px;min-width:150px;justify-content:flex-end}
   .opt-val{font-family:var(--body);font-size:14px;color:var(--bone);min-width:92px;text-align:center;text-shadow:0 1px 3px #000}
+  .opt-name{font-family:var(--body);font-size:14px;color:var(--bone);width:150px;text-align:center;
+    background:none;border:0;border-bottom:1px solid rgba(122,106,76,.35);padding:1px 4px;outline:none;
+    text-shadow:0 1px 3px #000}
+  .opt-name::placeholder{color:var(--muted)}
+  .opt-name:focus{border-bottom-color:var(--crimson-hi)}
   .arw{font-family:var(--body);font-size:17px;line-height:1;color:var(--crimson-hi);
     background:none;border:0;cursor:pointer;padding:1px 5px;opacity:.3;transition:opacity .16s,text-shadow .16s}
   .opt-row:hover .arw,.opt-row.active .arw,.opt-row:focus-visible .arw{opacity:1}
@@ -227,7 +232,32 @@
     act_dodgeR3:['Dodge (R3)','Esquivar (R3)','Esquiver (R3)','Ausweichen (R3)','Schivata (R3)','Esquivar (R3)','Уклонение (R3)'],
     act_inventory:['Inventory','Inventario','Inventaire','Inventar','Inventario','Inventário','Инвентарь'],
     act_pauseStart:['Pause','Pausa','Pause','Pause','Pausa','Pausa','Пауза'],
+    lbl_name:['Player Name','Nombre del Jugador','Nom du Joueur','Spielername','Nome del Giocatore','Nome do Jogador','Имя игрока'],
+    tip_name:['Your name in game and in System Link. Up to 15 characters; blank = User.','Tu nombre en el juego y en System Link. Hasta 15 caracteres; vacío = User.','Votre nom en jeu et en System Link. 15 caractères max ; vide = User.','Dein Name im Spiel und bei System Link. Bis zu 15 Zeichen; leer = User.','Il tuo nome nel gioco e in System Link. Fino a 15 caratteri; vuoto = User.','Seu nome no jogo e no System Link. Até 15 caracteres; vazio = User.','Ваше имя в игре и в System Link. До 15 символов; пусто = User.'],
+    lbl_build:['Game Version','Versión del Juego','Version du Jeu','Spielversion','Versione del Gioco','Versão do Jogo','Версия игры'],
+    tip_build:['Builds found next to the launcher. update needs its own game folder.','Compilaciones encontradas junto al launcher. update necesita su propia carpeta de juego.','Versions trouvées à côté du lanceur. update nécessite son propre dossier de jeu.','Neben dem Launcher gefundene Builds. update braucht einen eigenen Spielordner.','Build trovate accanto al launcher. update richiede una propria cartella di gioco.','Builds encontradas ao lado do launcher. update precisa de sua própria pasta de jogo.','Сборки, найденные рядом с лаунчером. Для update нужна отдельная папка игры.'],
+    tip_path_vk:['FSI: accurate (default). Host: faster, experimental — lighting may break.','FSI: precisa (predeterminada). Host: más rápida, experimental; la iluminación puede fallar.','FSI : précis (par défaut). Host : plus rapide, expérimental — l’éclairage peut casser.','FSI: genau (Standard). Host: schneller, experimentell – Beleuchtung kann fehlerhaft sein.','FSI: accurato (predefinito). Host: più veloce, sperimentale; l’illuminazione può rompersi.','FSI: preciso (padrão). Host: mais rápido, experimental; a iluminação pode falhar.','FSI: точный (по умолчанию). Host: быстрее, экспериментальный — освещение может ломаться.'],
+    lbl_backend:['Renderer','Renderizador','Moteur de rendu','Renderer','Motore di rendering','Renderizador','Рендерер'],
+    tip_backend:['D3D12: the tuned Windows path. Vulkan: shared with Linux, for testing.','D3D12: la ruta optimizada de Windows. Vulkan: compartida con Linux, para pruebas.','D3D12 : la voie optimisée pour Windows. Vulkan : partagée avec Linux, pour les tests.','D3D12: der optimierte Windows-Pfad. Vulkan: wie unter Linux, zum Testen.','D3D12: il percorso ottimizzato per Windows. Vulkan: condiviso con Linux, per i test.','D3D12: o caminho otimizado para Windows. Vulkan: compartilhado com o Linux, para testes.','D3D12: оптимизированный путь для Windows. Vulkan: общий с Linux, для тестов.'],
+    val_ingame:['In-game','Del juego','En jeu','Im Spiel','Dal gioco','No jogo','Из игры'],
+    tip_ingame:['“In-game” keeps the choice saved in Options > Video.','“Del juego” usa lo guardado en Opciones > Vídeo.','« En jeu » garde le choix enregistré dans Options > Vidéo.','„Im Spiel“ behält die Wahl aus Optionen > Video.','“Dal gioco” mantiene la scelta salvata in Opzioni > Video.','“No jogo” mantém a escolha salva em Opções > Vídeo.','«Из игры» — значение из Настройки > Видео.'],
   };
+
+  // Host capabilities. Launcher.ps1 injects none, which keeps the original
+  // Windows rows. The cross-platform launcher (launcher/tauri) injects its
+  // platform and the game builds it found; extra-features builds add an
+  // "In-game" choice (-1) that leaves the game's own saved setting alone.
+  const CAPS=Object.assign({platform:'windows',builds:null},window.LAUNCHER_CAPS||{});
+  const LINUX=CAPS.platform==='linux';
+  // Windows hosts whose single executable holds both renderers offer a choice;
+  // VK() is true whenever the Vulkan rows apply (always on Linux).
+  const WIN_VK=()=>!LINUX&&Array.isArray(CAPS.backends)&&CAPS.backends.includes('vulkan');
+  const VK=()=>LINUX||(WIN_VK()&&state.backend===1);
+  function curBuild(){
+    if(!CAPS.builds||!CAPS.builds.length)return null;
+    return CAPS.builds.find(b=>b.id===state.build)||CAPS.builds[0];
+  }
+  const EXTRAS=()=>{const b=curBuild();return !!(b&&b.extras);};
 
   // Game language options, injected by Launcher.ps1. Each: {code, name,
   // langId, countryId, uiIdx}. Fixed list of 5 (independent of which CPKs are
@@ -251,10 +281,13 @@
   // apply only on a fresh install. Otherwise Launcher.ps1 reads the last-used
   // values back out of diablo3.toml and injects them as window.SAVED_STATE, so
   // the launcher reopens on whatever you last played with.
-  const _sdefault={lang:0,path:1,fps:1,scale:0,res:0,display:0,mouse:0};
+  // vkpath/vsync are the Linux (Vulkan) rows; build is a CAPS.builds id.
+  const _sdefault={lang:0,path:1,fps:1,scale:0,vkscale:0,res:0,display:0,mouse:0,vkpath:0,vsync:1,backend:0,build:null,username:''};
   if(window.SAVED_STATE){Object.keys(_sdefault).forEach(k=>{
-    if(typeof window.SAVED_STATE[k]==='number')_sdefault[k]=window.SAVED_STATE[k];});}
+    const v=window.SAVED_STATE[k];
+    if(typeof v==='number'||((k==='build'||k==='username')&&typeof v==='string'))_sdefault[k]=v;});}
   if(_sdefault.lang>=LANGS.length)_sdefault.lang=0;  // saved language no longer installed
+  const HAS_NAME=!!window.SAVED_STATE&&typeof window.SAVED_STATE.username==='string';
   const state={..._sdefault,view:'main',binds:newBinds()};
   const menu=document.getElementById('menu');
   let lastKey='path';
@@ -294,16 +327,50 @@
   }
   function focusFirst(){const f=menu.querySelector('.opt-row');if(f)f.focus({preventScroll:true});}
 
-  function valsLen(key){
-    switch(key){
-      case 'path':return 2;
-      case 'fps':return FPS[state.path].length; case 'scale':return 3;
-      case 'res':return 3; case 'display':return 2; case 'mouse':return 2;
+  // Main-menu rows for this host. Each row lists its allowed state values;
+  // a stored value outside that list (e.g. "In-game" after switching to a
+  // normal build) displays and launches as the row's first choice.
+  // Language is not one of these rows: it lives in the top-left langBtn/
+  // langPopup instead (see renderLangBtn/renderLangPopup below), since it's
+  // a single always-visible toggle rather than a cycler value.
+  // [s39] Keyboard and gamepads now all compete on equal footing (whoever acts
+  // first at the title screen becomes P1) - there's no launcher-side "control
+  // mode" to pick anymore. Only the mouse-as-camera toggle and keybind remap
+  // stay here.
+  function mainRows(L){
+    const opts=labels=>labels.map((t,v)=>({v,t}));
+    const ext=EXTRAS(),ingame=ext?[{v:-1,t:T.val_ingame[L]}]:[];
+    const rows=[];
+    if(CAPS.builds&&CAPS.builds.length)
+      rows.push({key:'build',label:T.lbl_build[L],opts:CAPS.builds.map(b=>({v:b.id,t:b.label})),tip:T.tip_build[L]});
+    if(WIN_VK())
+      rows.push({key:'backend',label:T.lbl_backend[L],opts:opts(['D3D12','Vulkan']),tip:T.tip_backend[L]});
+    if(VK()){
+      // The Vulkan backend has no frame limiter, but it does share the FSR/CAS
+      // presenter. Off (plain bilinear) comes first so it stays the default.
+      rows.push({key:'vkpath',label:T.lbl_path[L],opts:opts(['FSI','Host']),tip:T.tip_path_vk[L]});
+      rows.push({key:'vsync',label:'VSync',opts:[{v:1,t:T.val_on[L]},{v:0,t:T.val_off[L]}]});
+      rows.push({key:'vkscale',label:T.lbl_scale[L],opts:opts([T.val_off[L],'FSR','CAS']),tip:T.tip_scale[L]});
+    } else {
+      rows.push({key:'path',label:T.lbl_path[L],opts:opts(['ROV','RTV']),tip:T.tip_path[L]});
+      rows.push({key:'fps',label:T.lbl_fps[L],opts:opts(FPS[state.path].map(f=>f+' FPS'))});
+      rows.push({key:'scale',label:T.lbl_scale[L],opts:opts(['FSR','CAS',T.val_off[L]]),tip:T.tip_scale[L]});
     }
+    rows.push({key:'res',label:T.lbl_res[L],opts:ingame.concat(opts(['1×','2×','3×'])),
+      tip:T.tip_res[L]+(ext?' '+T.tip_ingame[L]:'')});
+    rows.push({key:'display',label:T.lbl_display[L],opts:ingame.concat(opts([T.val_full[L],T.val_win[L]])),
+      tip:ext?T.tip_ingame[L]:undefined});
+    rows.push({key:'mouse',label:T.lbl_mouse[L],opts:opts([T.val_off[L],T.val_on[L]])});
+    // The player name is only offered by hosts that report one in SAVED_STATE.
+    if(HAS_NAME)rows.push({key:'username',label:T.lbl_name[L],input:true,novals:true,tip:T.tip_name[L]});
+    rows.push({key:'remap',label:T.remapBtn[L],nav:true,novals:true});
+    return rows;
   }
+  function effIdx(d){return Math.max(0,d.opts.findIndex(o=>o.v===state[d.key]));}
+  function eff(key){const d=mainRows(UIL()).find(r=>r.key===key);return d.opts[effIdx(d)].v;}
   function cycle(key,dir){
-    const n=valsLen(key);
-    state[key]=(state[key]+dir+n)%n;
+    const d=mainRows(UIL()).find(r=>r.key===key),n=d.opts.length;
+    state[key]=d.opts[(effIdx(d)+dir+n)%n].v;
     if(key==='path'&&state.fps>=FPS[state.path].length)state.fps=FPS[state.path].length-1;
     lastKey=key;renderMain();
   }
@@ -314,36 +381,34 @@
     stopListening();
     playBtn.textContent=T.play[UIL()];
     menu.innerHTML='';const L=UIL();
-    // Language is not one of these rows: it lives in the top-left langBtn/
-    // langPopup instead (see renderLangBtn/renderLangPopup below), since it's
-    // a single always-visible toggle rather than a cycler value.
-    // [s39] Keyboard and gamepads now all compete on equal footing (whoever acts
-    // first at the title screen becomes P1) - there's no launcher-side "control
-    // mode" to pick anymore. Only the mouse-as-camera toggle and keybind remap
-    // stay here.
-    const rows=[
-      {key:'path',label:T.lbl_path[L],vals:['ROV','RTV'],tip:T.tip_path[L]},
-      {key:'fps',label:T.lbl_fps[L],vals:FPS[state.path].map(f=>f+' FPS')},
-      {key:'scale',label:T.lbl_scale[L],vals:['FSR','CAS',T.val_off[L]],tip:T.tip_scale[L]},
-      {key:'res',label:T.lbl_res[L],vals:['1×','2×','3×'],tip:T.tip_res[L]},
-      {key:'display',label:T.lbl_display[L],vals:[T.val_full[L],T.val_win[L]]},
-      {key:'mouse',label:T.lbl_mouse[L],vals:[T.val_off[L],T.val_on[L]]},
-      {key:'remap',label:T.remapBtn[L],nav:true,novals:true},
-    ];
-    rows.forEach(d=>{
+    if(!mainRows(L).some(d=>d.key===lastKey))lastKey=mainRows(L)[0].key;
+    mainRows(L).forEach(d=>{
       const row=makeRow({
-        label:d.label,value:d.novals?undefined:d.vals[state[d.key]],tip:d.tip,
+        label:d.label,value:d.novals?undefined:d.opts[effIdx(d)].t,tip:d.tip,
         onLeft:d.novals?undefined:()=>cycle(d.key,-1),
         onRight:d.novals?undefined:()=>cycle(d.key,1),
-        onClick:()=>{lastKey=d.key; if(d.nav)goRemap(); else cycle(d.key,1);},
+        onClick:()=>{lastKey=d.key; if(d.nav)goRemap(); else if(d.input)row.querySelector('input').focus(); else cycle(d.key,1);},
         cls:(d.key===lastKey?'active':'')+(d.nav?' nav':''),
       });
       row.dataset.key=d.key;
+      if(d.input)row.appendChild(nameInput());
       row.addEventListener('focus',()=>{lastKey=d.key;
         document.querySelectorAll('.opt-row').forEach(x=>x.classList.remove('active'));row.classList.add('active');});
       menu.appendChild(row);
     });
     const act=menu.querySelector('.opt-row.active');if(act)act.focus({preventScroll:true});
+  }
+
+  // Text box for the player name (XAM keeps at most 15 characters).
+  function nameInput(){
+    const input=document.createElement('input');
+    input.className='opt-name';input.type='text';input.maxLength=15;input.spellcheck=false;
+    input.placeholder='User';input.value=state.username;input.setAttribute('aria-label',T.lbl_name[UIL()]);
+    input.addEventListener('input',()=>{state.username=input.value;});
+    // Keep Space/Enter/arrows for typing instead of the row's own key handling.
+    input.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Enter')input.closest('.opt-row').focus();});
+    input.addEventListener('click',e=>e.stopPropagation());
+    return input;
   }
 
   function stopListening(){if(cancelListen){cancelListen();cancelListen=null;}}
@@ -431,35 +496,43 @@
   render();
 
   function buildLaunchConfig(){
+    const b=curBuild(),res=eff('res'),display=eff('display');
     return {
+      // Cross-platform host only (Launcher.ps1 ignores these): selected build,
+      // Vulkan path, and null/0 for "In-game" display/resolution.
+      build:b?b.id:null,
+      vkPath:['fsi','host'][state.vkpath]||'fsi',
       rtp:state.path===0?'rov':'rtv',
       fps:FPS[state.path][state.fps],
-      vsync:FPS[state.path][state.fps]<=60,
+      backend:VK()?'vulkan':'d3d12',
+      vsync:VK()?state.vsync!==0:FPS[state.path][state.fps]<=60,
       // [s39] Keyboard always races for a slot alongside gamepads now - no
       // launcher-side control-mode pin. Only whether the mouse also drives the
       // camera stays a launcher choice.
       mnkMode:true,
       mnkMouse:state.mouse===1,
-      present:['fsr','cas','bilinear'][state.scale],
-      resScale:state.res+1,
-      fullscreen:state.display===0,
+      present:VK()?['bilinear','fsr','cas'][state.vkscale]:['fsr','cas','bilinear'][state.scale],
+      resScale:res+1,
+      fullscreen:display===-1?null:display===0,
       lang:state.lang,
       langId:LANGS[state.lang].langId,
       countryId:LANGS[state.lang].countryId,
+      // Passed to the game as SOTR_USERNAME.
+      username:state.username.trim(),
     };
   }
   playBtn.addEventListener('click',e=>{
     const b=e.currentTarget;b.style.color='#fff6df';setTimeout(()=>b.style.color='',220);
-    if(window.chrome&&window.chrome.webview){
-      window.chrome.webview.postMessage(JSON.stringify({type:'play',config:buildLaunchConfig()}));
-    }
+    sendHost({type:'play',config:buildLaunchConfig()});
   });
 
-  function postHost(type){
-    if(window.chrome&&window.chrome.webview){
-      window.chrome.webview.postMessage(JSON.stringify({type}));
-    }
+  // Launcher.ps1 receives messages through WebView2's chrome.webview channel;
+  // the cross-platform host installs window.LAUNCHER_HOST instead.
+  function sendHost(msg){
+    if(window.LAUNCHER_HOST)window.LAUNCHER_HOST.post(msg);
+    else if(window.chrome&&window.chrome.webview)window.chrome.webview.postMessage(JSON.stringify(msg));
   }
+  function postHost(type){sendHost({type});}
   document.getElementById('winClose').addEventListener('click',e=>{e.stopPropagation();postHost('close');});
   document.getElementById('dragHead').addEventListener('pointerdown',e=>{
     if(e.button!==0)return;

@@ -1,0 +1,825 @@
+{
+  "base_executable_sha256": "cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef",
+  "updated_executable_sha256": "447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f",
+  "note": "Unique instruction-context matches unless method specified. Branch and D-form immediates masked for context search. All leaf entries have updated rdata pointer references. Runtime validation remains required.",
+  "entries": [
+    {
+      "base": "82D1DE50",
+      "updated": "82D26010",
+      "file": "callbacks.toml",
+      "size": 12,
+      "context_radius": 32,
+      "matches": 0,
+      "method": "cmpwi/bnelr callback; tail branch to relocated 82D13398 helper"
+    },
+    {
+      "base": "82FAD978",
+      "updated": "82FB6C70",
+      "file": "callbacks.toml",
+      "size": 252,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FE5EE0",
+      "updated": "82FEF1D8",
+      "file": "callbacks.toml",
+      "size": 24,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FE5EF8",
+      "updated": "82FEF1F0",
+      "file": "callbacks.toml",
+      "size": 12,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "8240FD60",
+      "updated": "82412360",
+      "file": "leaf-functions.toml",
+      "size": 4,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "824DEF80",
+      "updated": "824E1760",
+      "file": "leaf-functions.toml",
+      "size": 4,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "8254B2C0",
+      "updated": "8254EE40",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82768758",
+      "updated": "8276EE50",
+      "file": "leaf-functions.toml",
+      "size": 44,
+      "context_radius": 128,
+      "matches": 1
+    },
+    {
+      "base": "827B81C0",
+      "updated": "827BECC0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "827B81C8",
+      "updated": "827BECC8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "828292F0",
+      "updated": "828300E0",
+      "file": "leaf-functions.toml",
+      "size": 16,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "828294E0",
+      "updated": "828302D0",
+      "file": "leaf-functions.toml",
+      "size": 24,
+      "context_radius": 32,
+      "matches": 0,
+      "method": "identical forwarding body; global offset changes BA54 to CC74"
+    },
+    {
+      "base": "829EADE8",
+      "updated": "829F25A0",
+      "file": "leaf-functions.toml",
+      "size": 52,
+      "context_radius": 32,
+      "matches": 7,
+      "method": "identical seven-function cluster spacing and body; relocated tail branches"
+    },
+    {
+      "base": "829EC8D0",
+      "updated": "829F4088",
+      "file": "leaf-functions.toml",
+      "size": 52,
+      "context_radius": 32,
+      "matches": 7,
+      "method": "identical seven-function cluster spacing and body; relocated tail branches"
+    },
+    {
+      "base": "829EE1B8",
+      "updated": "829F5970",
+      "file": "leaf-functions.toml",
+      "size": 52,
+      "context_radius": 32,
+      "matches": 7,
+      "method": "identical seven-function cluster spacing and body; relocated tail branches"
+    },
+    {
+      "base": "829EFA30",
+      "updated": "829F71E8",
+      "file": "leaf-functions.toml",
+      "size": 52,
+      "context_radius": 32,
+      "matches": 7,
+      "method": "identical seven-function cluster spacing and body; relocated tail branches"
+    },
+    {
+      "base": "829EFF98",
+      "updated": "829F7750",
+      "file": "leaf-functions.toml",
+      "size": 52,
+      "context_radius": 32,
+      "matches": 7,
+      "method": "identical seven-function cluster spacing and body; relocated tail branches"
+    },
+    {
+      "base": "829F19A0",
+      "updated": "829F9158",
+      "file": "leaf-functions.toml",
+      "size": 52,
+      "context_radius": 32,
+      "matches": 7,
+      "method": "identical seven-function cluster spacing and body; relocated tail branches"
+    },
+    {
+      "base": "829F7C90",
+      "updated": "829FF448",
+      "file": "leaf-functions.toml",
+      "size": 52,
+      "context_radius": 32,
+      "matches": 7,
+      "method": "identical seven-function cluster spacing and body; relocated tail branches"
+    },
+    {
+      "base": "82F37150",
+      "updated": "82F3F330",
+      "file": "leaf-functions.toml",
+      "size": 164,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82F8F398",
+      "updated": "82F98690",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5558",
+      "updated": "82FAE850",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5560",
+      "updated": "82FAE858",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5568",
+      "updated": "82FAE860",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5570",
+      "updated": "82FAE868",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5578",
+      "updated": "82FAE870",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5580",
+      "updated": "82FAE878",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5588",
+      "updated": "82FAE880",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5590",
+      "updated": "82FAE888",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA55A0",
+      "updated": "82FAE898",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA55A8",
+      "updated": "82FAE8A0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA55B0",
+      "updated": "82FAE8A8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA55B8",
+      "updated": "82FAE8B0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA55C0",
+      "updated": "82FAE8B8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA55C8",
+      "updated": "82FAE8C0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA55D0",
+      "updated": "82FAE8C8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FA5638",
+      "updated": "82FAE930",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABC90",
+      "updated": "82FB4F88",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABC98",
+      "updated": "82FB4F90",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCA0",
+      "updated": "82FB4F98",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCA8",
+      "updated": "82FB4FA0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCB0",
+      "updated": "82FB4FA8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCB8",
+      "updated": "82FB4FB0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCC0",
+      "updated": "82FB4FB8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCD0",
+      "updated": "82FB4FC8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCD8",
+      "updated": "82FB4FD0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCE0",
+      "updated": "82FB4FD8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCE8",
+      "updated": "82FB4FE0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCF0",
+      "updated": "82FB4FE8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABCF8",
+      "updated": "82FB4FF0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABD00",
+      "updated": "82FB4FF8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABD08",
+      "updated": "82FB5000",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABD10",
+      "updated": "82FB5008",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABD18",
+      "updated": "82FB5010",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FABD20",
+      "updated": "82FB5018",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD8E0",
+      "updated": "82FB6BD8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD8E8",
+      "updated": "82FB6BE0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD8F0",
+      "updated": "82FB6BE8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD900",
+      "updated": "82FB6BF8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD908",
+      "updated": "82FB6C00",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD910",
+      "updated": "82FB6C08",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD918",
+      "updated": "82FB6C10",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD920",
+      "updated": "82FB6C18",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD928",
+      "updated": "82FB6C20",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD930",
+      "updated": "82FB6C28",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD938",
+      "updated": "82FB6C30",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD940",
+      "updated": "82FB6C38",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD948",
+      "updated": "82FB6C40",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD950",
+      "updated": "82FB6C48",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD958",
+      "updated": "82FB6C50",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD960",
+      "updated": "82FB6C58",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD968",
+      "updated": "82FB6C60",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FAD970",
+      "updated": "82FB6C68",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FE7688",
+      "updated": "82FF0980",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FE8620",
+      "updated": "82FF1918",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FE8628",
+      "updated": "82FF1920",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FE8B20",
+      "updated": "82FF1E18",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FEBB38",
+      "updated": "82FF4E30",
+      "file": "leaf-functions.toml",
+      "size": 52,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FEBDF0",
+      "updated": "82FF50E8",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FED268",
+      "updated": "82FF6560",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83005BB8",
+      "updated": "8300EEB0",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83006378",
+      "updated": "8300F670",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83006388",
+      "updated": "8300F680",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83008250",
+      "updated": "83011548",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83008260",
+      "updated": "83011558",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83008278",
+      "updated": "83011570",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83008280",
+      "updated": "83011578",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83008288",
+      "updated": "83011580",
+      "file": "leaf-functions.toml",
+      "size": 8,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "830FA618",
+      "updated": "83103860",
+      "file": "leaf-functions.toml",
+      "size": 84,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FE9448",
+      "updated": "82FF2740",
+      "file": "thunks.toml",
+      "size": 4,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FEB0C0",
+      "updated": "82FF43B8",
+      "file": "thunks.toml",
+      "size": 4,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82FEC3F8",
+      "updated": "82FF56F0",
+      "file": "thunks.toml",
+      "size": 4,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "831583B0",
+      "updated": "83161AD0",
+      "file": "hooks",
+      "size": 128,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "83158680",
+      "updated": "83161DA0",
+      "file": "hooks",
+      "size": 128,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82632E00",
+      "updated": "826374E8",
+      "file": "hooks",
+      "size": 128,
+      "context_radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "8253D550",
+      "updated": "82540318",
+      "file": "indirect-entries.toml",
+      "size": 44,
+      "method": "functor thunk; same body, getter 0x8253D9E0 -> 0x825407A8 (found by sweeping each executable separately)"
+    },
+    {
+      "base": "8254BFD0",
+      "updated": "8254FB50",
+      "file": "indirect-entries.toml",
+      "size": 8,
+      "method": "functor thunk; same body, relocated tail branch (found by sweeping each executable separately)"
+    },
+    {
+      "base": "8255D8D0",
+      "updated": "825613C0",
+      "file": "indirect-entries.toml",
+      "size": 8,
+      "method": "functor thunk; same body, relocated tail branch (found by sweeping each executable separately)"
+    },
+    {
+      "base": "827A9578",
+      "updated": "827B0078",
+      "file": "indirect-entries.toml",
+      "size": 4,
+      "method": "empty method; same address-taken getter pattern (found by sweeping each executable separately)"
+    },
+    {
+      "base": "82DB0E80",
+      "updated": "82DB9040",
+      "file": "indirect-entries.toml",
+      "size": 8,
+      "method": "Lua str_find; referenced from the relocated strlib[] table (found by sweeping each executable separately)"
+    },
+    {
+      "base": "830FC618",
+      "updated": "83105860",
+      "file": "indirect-entries.toml",
+      "size": 120,
+      "method": "XML parser state handler; same body and handler chain (found by sweeping each executable separately)"
+    },
+    {
+      "base": "830FC988",
+      "updated": "83105BD0",
+      "file": "indirect-entries.toml",
+      "size": 92,
+      "method": "XML parser state handler; same body and handler chain (found by sweeping each executable separately)"
+    }
+  ]
+}

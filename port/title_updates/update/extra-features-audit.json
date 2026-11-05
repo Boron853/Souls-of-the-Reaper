@@ -1,0 +1,148 @@
+{
+  "base_executable_sha256": "cc918a70940517f974d0fd60d4936c8236e8dc21130cf4a8b8ae915451c289ef",
+  "update_executable_sha256": "447652ffa8abe4c7b8bed590a3887efc23e1181fd836b7a3192b8a2a37ddf80f",
+  "method": "Unique normalized surrounding PPC instruction contexts, with branch and D-form immediates masked; generated guest calls corroborate helper identity. Special case noted per entry.",
+  "functions": [
+    {
+      "base": "823BD130",
+      "update": "823BD130",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "8246C4B0",
+      "update": "8246EB18",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "8246C520",
+      "update": "8246EB88",
+      "radius": 32,
+      "matches": 119,
+      "evidence": "Direct call from selector change handler 0x827035A8, followed by lwz selected index at +472."
+    },
+    {
+      "base": "825086E0",
+      "update": "8250B098",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "826FBD68",
+      "update": "82702450",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "826FBE30",
+      "update": "82702518",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "826FBFF0",
+      "update": "827026D8",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "826FC030",
+      "update": "82702718",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "826FC798",
+      "update": "82702E80",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "826FCE80",
+      "update": "82703568",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "826FD808",
+      "update": "82703EF0",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82700AD8",
+      "update": "827071C0",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82749C10",
+      "update": "82750310",
+      "radius": 128,
+      "matches": 1
+    },
+    {
+      "base": "8282F0F0",
+      "update": "82835EE0",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82CD9520",
+      "update": "82CE1608",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82CDA018",
+      "update": "82CE2100",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82CDAD58",
+      "update": "82CE2E40",
+      "radius": 256,
+      "matches": 1
+    },
+    {
+      "base": "82CDB0F0",
+      "update": "82CE31D8",
+      "radius": 256,
+      "matches": 1
+    }
+  ],
+  "data": {
+    "options_owner": {
+      "base": "83302514",
+      "update": "8330340C",
+      "evidence": "update selector change handler: lis r10,-31952; lwz r11,13324(r10)."
+    },
+    "selector_text": {
+      "base": "8207F9A4",
+      "update": "82080A1C",
+      "evidence": "update label handler: lis r11,-32248; addi r5,r11,2588; string is SelectorTemplateText."
+    },
+    "version_call_return": {
+      "base": "8247C004",
+      "update": "8247E340",
+      "evidence": "update launch-screen formatting call at 8247E33C to 823BD130, with r4=82003ED0 (%s)."
+    },
+    "version_format": {
+      "base": "82003ED0",
+      "update": "82003ED0"
+    }
+  },
+  "unchanged_layout_offsets": {
+    "video_vector": 128,
+    "active_descriptor_vector": 296,
+    "active_descriptor_index": 12,
+    "descriptor_stride": 44,
+    "descriptor_action_id": 32,
+    "selector_option_id": 4,
+    "selector_selected_index": 472,
+    "options_dirty_flag": 344,
+    "label_setter_vtable_slot": 132
+  }
+}

@@ -1,0 +1,11 @@
+# Base disc only: function addresses were audited against the base-disc hash in scripts/title_updates.py.
+[project]
+name = "diablo3"
+sdk_version = "0.10.0"
+game_root = "../../game"
+
+[entrypoint]
+file_path = "../../game/Default.xex"
+out_directory_path = "../generated/base"
+includes = ["config/thunks.toml", "config/callbacks.toml", "config/leaf-functions.toml",
+            "config/indirect-entries.toml"]

@@ -1,0 +1,50 @@
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 5bd3dc5..737eea9 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -116,12 +116,15 @@ target_link_libraries(rexui PUBLIC
+ )
+ target_link_libraries(rexui PRIVATE utf8cpp)
+ 
++# Spatial present effects (FSR 1.0 EASU+RCAS, CAS) are self-contained: precompiled
++# shader bytecode ships in-tree and constants are computed inline, so no external
++# FidelityFX SDK is needed. Define unconditionally.
++target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
+ if(REXGLUE_FIDELITYFX_SOURCE_DIR AND EXISTS "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include")
+     target_include_directories(rexui PRIVATE
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include"
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/ffx-api/include"
+     )
+-    target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
+ endif()
+ 
+ set(REXUI_HAS_FIDELITYFX_RUNTIME OFF)
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index 7360ed9..02f55d8 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -42,8 +42,22 @@ REXCVAR_DEFINE_INT32(present_safe_area_y, 90, "UI/Presenter",
+ 
+ #if defined(REX_HAS_FIDELITYFX_SDK)
+ REXCVAR_DEFINE_STRING(present_effect, "bilinear", "UI/Presenter",
+-                      "Guest output effect: bilinear, cas, fsr, fsr2, fsr3")
+-    .allowed({"bilinear", "cas", "fsr", "fsr2", "fsr3"})
++                      "Scaling/sharpening filter applied to the guest output framebuffer at "
++                      "the final present pass. Does NOT change the game's internal render "
++                      "resolution -- only how that image is scaled to the window/screen. "
++                      "Values: bilinear (plain stretch), cas (FidelityFX Contrast Adaptive "
++                      "Sharpening), fsr (FidelityFX Super Resolution 1.0 spatial upscaler, "
++                      "EASU+RCAS)"
++#if defined(REX_HAS_FIDELITYFX_RUNTIME) && REX_HAS_FIDELITYFX_RUNTIME
++                      ", fsr2 / fsr3 (temporal upscalers)"
++#endif
++                      )
++    .allowed({"bilinear", "cas", "fsr"
++#if defined(REX_HAS_FIDELITYFX_RUNTIME) && REX_HAS_FIDELITYFX_RUNTIME
++              ,
++              "fsr2", "fsr3"
++#endif
++             })
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+ REXCVAR_DEFINE_DOUBLE(present_cas_additional_sharpness,

@@ -1,0 +1,18 @@
+# Registered thread callback: cmpwi cr6,r3,0; bnelr cr6; b 0x82D13398.
+# A runtime backtrace confirms indirect dispatch from the callback list walker
+# at 0x823B2660. XenonRecomp independently identifies this entrypoint.
+[functions."0x82D1DE50"]
+size = 12
+
+# Leaf virtual method: raw instructions span 0x82FAD978..0x82FADA74.
+# All conditional branches remain in that range; terminal paths use bctr/blr.
+[functions."0x82FAD978"]
+size = 0xFC
+
+# Six-instruction virtual forwarding method, ending in an indirect tail call.
+[functions."0x82FE5EE0"]
+size = 0x18
+
+# Adjacent three-instruction argument forwarding thunk to 0x82FE57E8.
+[functions."0x82FE5EF8"]
+size = 0xC
