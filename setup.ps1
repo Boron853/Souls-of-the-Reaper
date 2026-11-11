@@ -4,7 +4,15 @@
   First-run setup for Souls of the Reaper (Diablo III ReXGlue port).
   Asks the user for their Xbox 360 Diablo III ISO, extracts the game data,
   and writes the initial config. After this, just run SoulsOfTheReaper.exe to play.
+
+  -Prepare -Iso <path> is the windowless mode RecompLauncher uses: no pickers, no
+  key presses, no launcher start, and "progress 0.4 Text" lines on the way. Without
+  these switches the script behaves exactly as before.
 #>
+param(
+    [string]$Iso,
+    [switch]$Prepare
+)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -30,6 +38,8 @@ if (Test-Path (Join-Path $ROOT "diablo3.exe")) {
 # ---------------------------------------------------------------------------
 
 function Write-Header {
+    # No console to clear when RecompLauncher runs this without a window.
+    if ($Prepare) { return }
     Clear-Host
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host "   Souls of the Reaper  -  First-Run Setup" -ForegroundColor Cyan
@@ -41,9 +51,16 @@ function Fail([string]$msg) {
     Write-Host ""
     Write-Host "ERROR: $msg" -ForegroundColor Red
     Write-Host ""
+    if ($Prepare) { exit 1 }
     Write-Host "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
+}
+
+function Write-Progress-Line([double]$fraction, [string]$text) {
+    if (-not $Prepare) { return }
+    $number = $fraction.ToString("0.00", [Globalization.CultureInfo]::InvariantCulture)
+    Write-Host "progress $number $text"
 }
 
 function Write-Step([string]$msg) {
@@ -121,17 +138,20 @@ Write-Host "  Select your Diablo III Xbox 360 ISO file." -ForegroundColor White
 Write-Host "  (A Windows file picker will open now...)" -ForegroundColor Gray
 Write-Host ""
 
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title            = "Select Diablo III Xbox 360 ISO"
-$dialog.Filter           = "Xbox 360 ISO (*.iso;*.xiso)|*.iso;*.xiso|All files (*.*)|*.*"
-$dialog.InitialDirectory = [Environment]::GetFolderPath("Desktop")
+$iso = $Iso
+if (-not $iso) {
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title            = "Select Diablo III Xbox 360 ISO"
+    $dialog.Filter           = "Xbox 360 ISO (*.iso;*.xiso)|*.iso;*.xiso|All files (*.*)|*.*"
+    $dialog.InitialDirectory = [Environment]::GetFolderPath("Desktop")
 
-if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
-    Write-Host "  Setup cancelled." -ForegroundColor Gray
-    exit 0
+    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+        Write-Host "  Setup cancelled." -ForegroundColor Gray
+        exit 0
+    }
+
+    $iso = $dialog.FileName
 }
-
-$iso = $dialog.FileName
 if (-not (Test-Path $iso)) { Fail "ISO not found: $iso" }
 
 $isoSizeMB = [int]((Get-Item $iso).Length / 1MB)
@@ -161,6 +181,7 @@ foreach ($searchDir in @($tempDir, $isoParent, $ROOT)) {
     if (Test-Path $old) { Remove-Item $old -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
+Write-Progress-Line 0.05 "Reading the disc image"
 Write-Step "Running extract-xiso..."
 # Run with WorkingDirectory=$tempDir so the extracted folder lands inside it.
 $proc = Start-Process -FilePath $EXTRACT `
@@ -176,6 +197,7 @@ if ($proc.ExitCode -ne 0) {
 # Locate CPKs
 # ---------------------------------------------------------------------------
 
+Write-Progress-Line 0.75 "Finding the game files"
 Write-Step "Locating game files..."
 
 # CPKs may be at root or inside a subdirectory (title folder on some dumps).
@@ -192,6 +214,7 @@ $extractedRoot = $cpkSearch.DirectoryName
 # Copy to game\
 # ---------------------------------------------------------------------------
 
+Write-Progress-Line 0.8 "Copying the game files"
 Write-Step "Setting up game directory..."
 
 if (Test-Path $GAMEOUT) { Remove-Item $GAMEOUT -Recurse -Force }
@@ -236,6 +259,7 @@ Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 # Write config
 # ---------------------------------------------------------------------------
 
+Write-Progress-Line 0.95 "Writing the settings"
 Write-Step "Writing configuration..."
 
 New-Item -ItemType Directory -Path (Split-Path $TOML -Parent) -Force | Out-Null
@@ -289,6 +313,11 @@ if (Test-Path (Join-Path $saveSrc "B13EBABEBABEBABE")) {
 # ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
+
+if ($Prepare) {
+    Write-Progress-Line 1 "Done"
+    exit 0
+}
 
 Write-Header
 Write-Host "  Setup complete!" -ForegroundColor Green
