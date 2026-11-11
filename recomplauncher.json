@@ -1,0 +1,128 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "Souls of the Reaper",
+  "repo": "Boron853/Souls-of-the-Reaper",
+  "game": {
+    "kind": "iso",
+    "label": "Your disc image (.iso) of Diablo III: Reaper of Souls for Xbox 360.",
+    "check": { "xdvdfs": "default.xex" }
+  },
+  "prepare": {
+    "program": ["prepare.cmd"],
+    "args": ["{game}"],
+    "label": "Game files from your disc",
+    "timeout": 3600
+  },
+  "start": {
+    "program": ["diablo3.exe"],
+    "args": ["--game_data_root", "{install}/game"]
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "toml",
+      "file": [{ "path": "{install}/diablo3.toml" }],
+      "ensure": {
+        "render_target_path_d3d12": "\"rtv\"",
+        "d3_frame_limit": "120",
+        "vsync": "false",
+        "fullscreen": "true",
+        "draw_resolution_scale_x": "1",
+        "draw_resolution_scale_y": "1",
+        "present_effect": "\"fsr\"",
+        "mnk_mouse": "false"
+      },
+      "always": {
+        "rtv_color_depth_ownership_mode": "8",
+        "execute_unclipped_draw_vs_on_cpu": "true",
+        "mnk_mode": "true",
+        "mnk_cursor_visible": "false"
+      }
+    }
+  ],
+  "saves": ["{documents}/diablo3"],
+  "folders": {
+    "saves": [{ "path": "{documents}/diablo3" }]
+  },
+  "settings": [
+    {
+      "id": "renderer",
+      "label": "Renderer",
+      "help": "Faithful matches the console picture at 60 FPS. Fast reaches much higher frame rates with the lighting and artifacts fixed.",
+      "choices": [
+        { "label": "Fast", "set": { "render_target_path_d3d12": "\"rtv\"" } },
+        { "label": "Faithful", "set": { "render_target_path_d3d12": "\"rov\"" } }
+      ],
+      "defaults": { "render_target_path_d3d12": "\"rtv\"" }
+    },
+    {
+      "id": "frame_rate",
+      "label": "Frame rate limit",
+      "help": "The most frames per second the game draws. Faithful goes up to 144, Fast up to 240.",
+      "choices": [
+        { "label": "30", "set": { "d3_frame_limit": "30" } },
+        { "label": "60", "set": { "d3_frame_limit": "60" } },
+        { "label": "120", "set": { "d3_frame_limit": "120" } },
+        { "label": "144", "set": { "d3_frame_limit": "144" } },
+        { "label": "240", "set": { "d3_frame_limit": "240" } }
+      ],
+      "defaults": { "d3_frame_limit": "120" }
+    },
+    {
+      "id": "resolution",
+      "label": "Resolution",
+      "help": "What the game draws at. 720p is the console's own. Higher is sharper and needs a faster graphics card.",
+      "choices": [
+        { "label": "720p", "set": { "draw_resolution_scale_x": "1", "draw_resolution_scale_y": "1" } },
+        { "label": "1440p", "set": { "draw_resolution_scale_x": "2", "draw_resolution_scale_y": "2" } },
+        { "label": "4K", "set": { "draw_resolution_scale_x": "3", "draw_resolution_scale_y": "3" } }
+      ],
+      "defaults": { "draw_resolution_scale_x": "1", "draw_resolution_scale_y": "1" }
+    },
+    {
+      "id": "upscaling",
+      "label": "Upscaling",
+      "help": "How the picture is fitted to your screen. FSR adds the most detail, Sharpen only sharpens, Off is a plain stretch.",
+      "choices": [
+        { "label": "FSR", "set": { "present_effect": "\"fsr\"" } },
+        { "label": "Sharpen", "set": { "present_effect": "\"cas\"" } },
+        { "label": "Off", "set": { "present_effect": "\"bilinear\"" } }
+      ],
+      "defaults": { "present_effect": "\"fsr\"" }
+    },
+    {
+      "id": "window",
+      "label": "Window",
+      "help": "Fullscreen fills your screen without borders. Windowed runs in a window.",
+      "choices": [
+        { "label": "Fullscreen", "set": { "fullscreen": "true" } },
+        { "label": "Windowed", "set": { "fullscreen": "false" } }
+      ],
+      "defaults": { "fullscreen": "true" }
+    },
+    {
+      "id": "vsync",
+      "label": "V-Sync",
+      "help": "Waits for your screen's refresh so the picture doesn't tear. Off gives the lowest delay.",
+      "choices": [
+        { "label": "Off", "set": { "vsync": "false" } },
+        { "label": "On", "set": { "vsync": "true" } }
+      ],
+      "defaults": { "vsync": "false" }
+    },
+    {
+      "id": "mouse",
+      "label": "Mouse camera",
+      "help": "With the keyboard, the mouse can also aim and dodge like the right stick. Gamepads work either way.",
+      "choices": [
+        { "label": "Off", "set": { "mnk_mouse": "false" } },
+        { "label": "On", "set": { "mnk_mouse": "true" } }
+      ],
+      "defaults": { "mnk_mouse": "false" }
+    }
+  ],
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your heroes and progress.", "open": "saves" }
+  ]
+}
